@@ -55,6 +55,8 @@ Build the first usable Dragon prototype around the macOS notch interaction:
   - reports success or failure directly in the menu
 - `Convert` is now eligibility-gated:
   - if the staged files are not convertible, the button is greyed out and unpressable
+  - it only offers output formats from the staged file's own category
+  - `pptx` files now expose text-oriented outputs through in-app slide extraction
 
 ### File staging
 
@@ -85,6 +87,36 @@ Build the first usable Dragon prototype around the macOS notch interaction:
   - failure state
   - a `Reveal` button for successful archives
   - a copy button for sharing the exact status text
+
+### Native sharing
+
+- `AirDrop` is now a live workflow through AppKit `NSSharingService`.
+- `Quick Share` now opens the native macOS sharing picker from the notch panel.
+- Both actions operate on the currently staged files.
+- Both actions now keep the notch panel stable while the share UI is active.
+- The notch panel now lowers behind system share UI so AirDrop and the macOS sharing picker stay visible and usable.
+
+### Conversion flow
+
+- `Convert` now supports category-scoped format picking:
+  - image files only see image outputs
+  - audio files only see audio outputs
+  - video files only see video outputs
+  - document files only see document outputs
+- The current conversion engine stack is:
+  - Image I/O for image conversion
+  - bundled reviewed `ffmpeg` for expanded audio and video conversion
+  - `afconvert` and AVFoundation as Apple-native fallback paths
+  - `textutil` for document conversion
+  - PDFKit for PDF text extraction
+  - in-app `pptx` slide-text extraction for presentation-to-text workflows
+- Dragon now resolves external tools through a single engine layer so the app can prefer bundled engines from `ConversionEngines/` without rewriting the conversion UI.
+- The repository now also includes explicit compliance documents for future bundled engines so conversion coverage can expand without losing control of licensing risk.
+- Verified current FFmpeg-backed media matrix:
+  - audio: `WAV` -> `AIFF`, `AIFC`, `CAF`, `M4A`, `AAC`, `FLAC`, `OGG`, `AC3`, `3GPP`, `3GPP-2`
+  - video: `MOV` -> `MP4`, `M4V`, `MOV`, `AVI`, `MKV`, `MPEG`
+- The earlier `MP3` target was removed from the surfaced conversion UI because the reviewed LGPL-oriented FFmpeg build does not include a working MP3 encoder in this configuration.
+- LibreOffice was investigated as a future office engine, but `pptx -> docx` and `pptx -> odt` did not validate reliably through `soffice --headless --convert-to ...` on this setup. Those targets were intentionally removed from the surfaced UI.
 
 ### Inline settings
 
@@ -122,17 +154,29 @@ The earlier separate settings window created lifecycle and crash risk around aux
 
 Presenting save panels from inside the notch SwiftUI view proved fragile for this floating utility architecture. The final flow delegates save-panel ownership to the AppKit host so the modal lifecycle stays under the same controller that owns the notch panel.
 
+### Why fade-only menu transitions
+
+Animating the floating `NSPanel` frame produced visibly choppy motion. Dragon now snaps the host window to its final geometry and uses a short opacity-only transition for the visible content, which is materially more stable.
+
 ## Known Limitations
 
 - The notch target is aligned to the screen center, not the physical hardware notch geometry.
-- Only `Compress` is implemented; the other actions remain placeholders.
+- `Finder Tag` and `Cloud Sync` remain placeholders.
 - The app does not yet detect clipboard-based file intake.
-- There is not yet any provider or automation backend for actions like conversion, quick sharing, AirDrop routing, or cloud sync.
+- Broader office and presentation conversion coverage still depends on finding a reliable office-engine path.
+- Dragon still does not provide a true full-family any-to-any matrix across all audio, video, and document types. The surfaced targets are intentionally limited to the verified passing set.
 
 ## Next Recommended Steps
 
-1. Add a real conversion pipeline with file-type-aware options.
-2. Implement a usable quick-share/export flow.
-3. Introduce service integrations, excluding Amazon S3 as requested.
-4. Make the activation area notch-aware per display where possible.
-5. Add tests around staging, layout state, and settings persistence.
+1. Implement `Finder Tag`.
+2. Implement `Cloud Sync`.
+3. Expand the verified conversion matrix family by family, source by source, instead of advertising theoretical format support.
+4. Introduce service integrations, excluding Amazon S3 as requested.
+5. Make the activation area notch-aware per display where possible.
+
+The repository still includes a LibreOffice acquisition and review plan for future investigation:
+
+- `Documentation/libreoffice-bundling-plan.md`
+- `Scripts/fetch_libreoffice_official.sh`
+- `Scripts/review_libreoffice_bundle.sh`
+- `ConversionEngines/manifests/libreoffice.mpl.example.json`

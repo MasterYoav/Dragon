@@ -1,0 +1,12 @@
+Dragon
+Copyright 2026 Yoav Peretz
+
+This product includes software components and may in the future bundle
+optional third-party conversion engines. See:
+
+- THIRD_PARTY_NOTICES.md
+- Documentation/licensing-and-commercialization.md
+
+No third-party bundled engine should be distributed with Dragon unless its
+license texts, attribution requirements, version metadata, and build metadata
+have been recorded in this repository and release artifacts.

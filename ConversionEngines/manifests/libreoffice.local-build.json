@@ -1,0 +1,16 @@
+{
+  "engine_name": "LibreOffice",
+  "binary_name": "soffice",
+  "version": "26.2.1.2",
+  "source_url": "https://download.documentfoundation.org/libreoffice/stable/26.2.1/mac/aarch64/LibreOffice_26.2.1_MacOS_aarch64.dmg",
+  "download_artifact": "LibreOffice_26.2.1_MacOS_aarch64.dmg",
+  "license": "MPL-2.0 / LGPLv3+",
+  "license_files": [
+    "ConversionEngines/licenses/libreoffice-LICENSE.html",
+    "ConversionEngines/licenses/libreoffice-README_en-US.txt"
+  ],
+  "bundle_path": ".build/libreoffice/LibreOffice.app",
+  "executable_path": ".build/libreoffice/LibreOffice.app/Contents/MacOS/soffice",
+  "reviewed": true,
+  "review_notes": "Downloaded from the official Document Foundation host, extracted locally from the DMG, and validated with Scripts/review_libreoffice_bundle.sh in the workspace review path."
+}

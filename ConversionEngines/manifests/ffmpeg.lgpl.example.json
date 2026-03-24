@@ -1,0 +1,41 @@
+{
+  "engine_name": "FFmpeg",
+  "binary_name": "ffmpeg",
+  "version": "8.0.1",
+  "source_url": "https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz",
+  "source_commit_or_tag": "n8.0.1",
+  "license": "LGPL-2.1-or-later",
+  "license_files": [
+    "ConversionEngines/licenses/ffmpeg-COPYING.LGPLv2.1.txt"
+  ],
+  "build_configuration": {
+    "platform": "macOS",
+    "arch": [
+      "arm64"
+    ],
+    "configure_flags": [
+      "--disable-debug",
+      "--disable-doc",
+      "--enable-static",
+      "--disable-shared",
+      "--disable-autodetect",
+      "--disable-programs",
+      "--enable-ffmpeg",
+      "--disable-ffplay",
+      "--disable-ffprobe",
+      "--enable-network",
+      "--enable-videotoolbox",
+      "--enable-audiotoolbox",
+      "--enable-appkit",
+      "--enable-avfoundation",
+      "--enable-securetransport",
+      "--disable-gpl",
+      "--disable-nonfree"
+    ],
+    "notes": "This is an example manifest only. Replace all values with the actual reviewed build metadata before release."
+  },
+  "distribution_review": {
+    "reviewed_for_release": false,
+    "review_notes": "Do not set true until the binary is inspected, notices are included, and release review is complete."
+  }
+}

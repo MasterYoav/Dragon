@@ -1,0 +1,16 @@
+{
+  "engine_name": "LibreOffice",
+  "binary_name": "soffice",
+  "version": "25.2.0",
+  "source_url": "https://www.libreoffice.org/download/download/",
+  "download_artifact": "LibreOffice_25.2.0_MacOS_aarch64.dmg",
+  "license": "MPL-2.0 / LGPLv3+",
+  "license_files": [
+    "ConversionEngines/licenses/libreoffice-LICENSE.txt",
+    "ConversionEngines/licenses/libreoffice-NOTICE.txt"
+  ],
+  "bundle_path": "ConversionEngines/LibreOffice.app",
+  "executable_path": "ConversionEngines/LibreOffice.app/Contents/MacOS/soffice",
+  "reviewed": false,
+  "review_notes": "Set to true only after confirming the official source URL, unpacked app bundle, included notices, and repository release checklist."
+}

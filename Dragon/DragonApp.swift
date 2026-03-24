@@ -58,6 +58,8 @@ private final class NotchPanelController: NSObject {
     private var importPanelWillPresentObserver: NSObjectProtocol?
     private var importPanelDidDismissObserver: NSObjectProtocol?
     private var savePanelHostWindow: NSWindow?
+    private var sharingCoordinator: SharingCoordinator?
+    private var panelLevelBeforeShare: NSWindow.Level?
 
     override init() {
         let panelStateBridge = PanelStateBridge()
@@ -65,7 +67,10 @@ private final class NotchPanelController: NSObject {
             rootView: ContentView(
                 onExpansionChange: panelStateBridge.handleExpansionChange,
                 onSettingsExpansionChange: panelStateBridge.handleSettingsExpansionChange,
-                requestArchiveDestination: panelStateBridge.handleArchiveDestinationRequest
+                requestArchiveDestination: panelStateBridge.handleArchiveDestinationRequest,
+                requestConversionDestination: panelStateBridge.handleConversionDestinationRequest,
+                requestAirDropShare: panelStateBridge.handleAirDropShareRequest,
+                requestQuickShare: panelStateBridge.handleQuickShareRequest
             )
         )
 
@@ -113,6 +118,18 @@ private final class NotchPanelController: NSObject {
 
         panelStateBridge.onArchiveDestinationRequest = { [weak self] suggestedFileName, completion in
             self?.requestArchiveDestination(suggestedFileName: suggestedFileName, completion: completion)
+        }
+
+        panelStateBridge.onConversionDestinationRequest = { [weak self] suggestedBaseName, formats, completion in
+            self?.requestConversionDestination(suggestedBaseName: suggestedBaseName, formats: formats, completion: completion)
+        }
+
+        panelStateBridge.onAirDropShareRequest = { [weak self] urls, completion in
+            self?.requestAirDropShare(urls: urls, completion: completion)
+        }
+
+        panelStateBridge.onQuickShareRequest = { [weak self] urls, completion in
+            self?.requestQuickShare(urls: urls, completion: completion)
         }
 
         importPanelWillPresentObserver = NotificationCenter.default.addObserver(
@@ -237,6 +254,142 @@ private final class NotchPanelController: NSObject {
         }
     }
 
+    private func requestConversionDestination(
+        suggestedBaseName: String,
+        formats: [DragonConversionFormat],
+        completion: @escaping (DragonConversionSelection?) -> Void
+    ) {
+        guard let initialFormat = formats.first else {
+            completion(nil)
+            return
+        }
+
+        setImportPanelPresented(true)
+        NSApp.activate(ignoringOtherApps: true)
+
+        let savePanel = NSSavePanel()
+        savePanel.canCreateDirectories = true
+        savePanel.isExtensionHidden = false
+        savePanel.nameFieldLabel = "Converted File:"
+        savePanel.nameFieldStringValue = "\(suggestedBaseName).\(initialFormat.preferredFileExtension)"
+        savePanel.title = "Convert File"
+        savePanel.message = "Choose the output format and where Dragon should save the converted file."
+
+        let popupButton = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 220, height: 28), pullsDown: false)
+        popupButton.addItems(withTitles: formats.map(\.title))
+        savePanel.accessoryView = popupButton
+
+        let hostWindow = makeSavePanelHostWindow()
+        savePanelHostWindow = hostWindow
+        hostWindow.makeKeyAndOrderFront(nil)
+
+        savePanel.beginSheetModal(for: hostWindow) { [weak self] response in
+            Task { @MainActor [weak self] in
+                self?.setImportPanelPresented(false)
+                self?.savePanelHostWindow?.orderOut(nil)
+                self?.savePanelHostWindow = nil
+
+                guard response == .OK else {
+                    completion(nil)
+                    return
+                }
+
+                let selectedFormat = formats[popupButton.indexOfSelectedItem]
+                let selectedURL = savePanel.url ?? URL(fileURLWithPath: suggestedBaseName)
+                let normalizedURL = selectedURL.deletingPathExtension().appendingPathExtension(selectedFormat.preferredFileExtension)
+                completion(DragonConversionSelection(format: selectedFormat, outputURL: normalizedURL))
+            }
+        }
+    }
+
+    private func requestAirDropShare(urls: [URL], completion: @escaping (Result<String, Error>) -> Void) {
+        guard urls.isEmpty == false else {
+            completion(.failure(PanelShareError.unavailable("Stage one or more files before sharing.")))
+            return
+        }
+
+        guard let service = NSSharingService(named: .sendViaAirDrop), service.canPerform(withItems: urls) else {
+            completion(.failure(PanelShareError.unavailable("AirDrop is unavailable for the staged files on this Mac.")))
+            return
+        }
+
+        setImportPanelPresented(true)
+        NSApp.activate(ignoringOtherApps: true)
+        preparePanelForShare()
+
+        let coordinator = SharingCoordinator(mode: .airDrop) { [weak self] result in
+            Task { @MainActor [weak self] in
+                self?.setImportPanelPresented(false)
+                self?.restorePanelAfterShare()
+                self?.sharingCoordinator = nil
+                completion(result)
+            }
+        }
+
+        sharingCoordinator = coordinator
+        service.delegate = coordinator
+        service.perform(withItems: urls)
+    }
+
+    private func requestQuickShare(urls: [URL], completion: @escaping (Result<String, Error>) -> Void) {
+        guard urls.isEmpty == false else {
+            completion(.failure(PanelShareError.unavailable("Stage one or more files before sharing.")))
+            return
+        }
+
+        guard let contentView = panel.contentView else {
+            completion(.failure(PanelShareError.unavailable("Dragon could not present the share sheet.")))
+            return
+        }
+
+        setImportPanelPresented(true)
+        NSApp.activate(ignoringOtherApps: true)
+        preparePanelForShare()
+
+        let coordinator = SharingCoordinator(mode: .quickShare) { [weak self] result in
+            Task { @MainActor [weak self] in
+                self?.setImportPanelPresented(false)
+                self?.restorePanelAfterShare()
+                self?.sharingCoordinator = nil
+                completion(result)
+            }
+        }
+
+        sharingCoordinator = coordinator
+
+        let picker = NSSharingServicePicker(items: urls)
+        picker.delegate = coordinator
+
+        let anchorRect = NSRect(
+            x: (contentView.bounds.width / 2) - 1,
+            y: contentView.bounds.height - 8,
+            width: 2,
+            height: 2
+        )
+        picker.show(relativeTo: anchorRect, of: contentView, preferredEdge: .maxY)
+    }
+
+    private func preparePanelForShare() {
+        guard panelLevelBeforeShare == nil else {
+            return
+        }
+
+        panelLevelBeforeShare = panel.level
+        panel.level = .floating
+        panel.orderBack(nil)
+    }
+
+    private func restorePanelAfterShare() {
+        guard let panelLevelBeforeShare else {
+            return
+        }
+
+        panel.level = panelLevelBeforeShare
+        self.panelLevelBeforeShare = nil
+        panel.orderFrontRegardless()
+        updatePanelVisibility()
+    }
+
     private func makeSavePanelHostWindow() -> NSWindow {
         if let savePanelHostWindow {
             return savePanelHostWindow
@@ -305,15 +458,7 @@ private final class NotchPanelController: NSObject {
         isUpdatingPanelLayout = true
         defer { isUpdatingPanelLayout = false }
 
-        if animated {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.12
-                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                panel.animator().setFrame(newFrame, display: true)
-            }
-        } else {
-            panel.setFrame(newFrame, display: true)
-        }
+        panel.setFrame(newFrame, display: true)
 
         if isExpanded == false {
             collapsedAnchorX = panel.frame.midX
@@ -434,6 +579,9 @@ private final class PanelStateBridge {
     var onExpansionChange: ((Bool) -> Void)?
     var onSettingsExpansionChange: ((Bool) -> Void)?
     var onArchiveDestinationRequest: ((String, @escaping (URL?) -> Void) -> Void)?
+    var onConversionDestinationRequest: ((String, [DragonConversionFormat], @escaping (DragonConversionSelection?) -> Void) -> Void)?
+    var onAirDropShareRequest: (([URL], @escaping (Result<String, Error>) -> Void) -> Void)?
+    var onQuickShareRequest: (([URL], @escaping (Result<String, Error>) -> Void) -> Void)?
 
     func handleExpansionChange(_ isExpanded: Bool) {
         onExpansionChange?(isExpanded)
@@ -445,5 +593,92 @@ private final class PanelStateBridge {
 
     func handleArchiveDestinationRequest(_ suggestedFileName: String, completion: @escaping (URL?) -> Void) {
         onArchiveDestinationRequest?(suggestedFileName, completion)
+    }
+
+    func handleConversionDestinationRequest(
+        _ suggestedBaseName: String,
+        _ formats: [DragonConversionFormat],
+        _ completion: @escaping (DragonConversionSelection?) -> Void
+    ) {
+        onConversionDestinationRequest?(suggestedBaseName, formats, completion)
+    }
+
+    func handleAirDropShareRequest(_ urls: [URL], _ completion: @escaping (Result<String, Error>) -> Void) {
+        onAirDropShareRequest?(urls, completion)
+    }
+
+    func handleQuickShareRequest(_ urls: [URL], _ completion: @escaping (Result<String, Error>) -> Void) {
+        onQuickShareRequest?(urls, completion)
+    }
+}
+
+@MainActor
+private final class SharingCoordinator: NSObject, NSSharingServiceDelegate, NSSharingServicePickerDelegate {
+    private let mode: SharingMode
+    private let completion: (Result<String, Error>) -> Void
+    private var didFinish = false
+
+    init(mode: SharingMode, completion: @escaping (Result<String, Error>) -> Void) {
+        self.mode = mode
+        self.completion = completion
+    }
+
+    func sharingServicePicker(
+        _ sharingServicePicker: NSSharingServicePicker,
+        sharingServicesForItems items: [Any],
+        proposedSharingServices proposedServices: [NSSharingService]
+    ) -> [NSSharingService] {
+        proposedServices
+    }
+
+    func sharingServicePicker(_ sharingServicePicker: NSSharingServicePicker, delegateFor sharingService: NSSharingService) -> NSSharingServiceDelegate? {
+        self
+    }
+
+    func sharingServicePicker(_ sharingServicePicker: NSSharingServicePicker, didChoose service: NSSharingService?) {
+        guard service != nil else {
+            finish(.success("Share sheet dismissed."))
+            return
+        }
+    }
+
+    func sharingService(_ sharingService: NSSharingService, didShareItems items: [Any]) {
+        let detail: String
+        switch mode {
+        case .airDrop:
+            detail = "AirDrop opened for the staged files."
+        case .quickShare:
+            detail = "Share completed through \(sharingService.title)."
+        }
+        finish(.success(detail))
+    }
+
+    func sharingService(_ sharingService: NSSharingService, didFailToShareItems items: [Any], error: Error) {
+        finish(.failure(error))
+    }
+
+    private func finish(_ result: Result<String, Error>) {
+        guard didFinish == false else {
+            return
+        }
+
+        didFinish = true
+        completion(result)
+    }
+}
+
+private enum SharingMode {
+    case airDrop
+    case quickShare
+}
+
+private enum PanelShareError: LocalizedError {
+    case unavailable(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable(let detail):
+            return detail
+        }
     }
 }

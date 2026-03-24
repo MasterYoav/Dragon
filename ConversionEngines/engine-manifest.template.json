@@ -1,0 +1,23 @@
+{
+  "engine_name": "example",
+  "binary_name": "example",
+  "version": "0.0.0",
+  "source_url": "https://example.com/source",
+  "source_commit_or_tag": "v0.0.0",
+  "license": "Example License",
+  "license_files": [
+    "ConversionEngines/licenses/example-LICENSE.txt"
+  ],
+  "build_configuration": {
+    "platform": "macOS",
+    "arch": [
+      "arm64"
+    ],
+    "configure_flags": [],
+    "notes": "Record the exact build flags used for shipped binaries."
+  },
+  "distribution_review": {
+    "reviewed_for_release": false,
+    "review_notes": "Set this to true only after license and attribution review."
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "engine_name": "FFmpeg",
+  "binary_name": "ffmpeg",
+  "version": "8.0.1",
+  "source_url": "https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz",
+  "source_commit_or_tag": "n8.0.1",
+  "license": "LGPL-2.1-or-later",
+  "license_files": [
+    "ConversionEngines/licenses/ffmpeg-COPYING.LGPLv2.1.txt"
+  ],
+  "build_configuration": {
+    "platform": "macOS",
+    "arch": [
+      "arm64"
+    ],
+    "configure_flags": [
+      "--prefix=/Users/yoavperetz/Developer/Dragon/.build/ffmpeg/install",
+      "--disable-debug",
+      "--disable-doc",
+      "--enable-static",
+      "--disable-shared",
+      "--disable-autodetect",
+      "--disable-gpl",
+      "--disable-nonfree",
+      "--disable-ffplay",
+      "--disable-ffprobe",
+      "--enable-network",
+      "--enable-videotoolbox",
+      "--enable-audiotoolbox",
+      "--enable-appkit",
+      "--enable-avfoundation",
+      "--enable-securetransport",
+      "--enable-ffmpeg"
+    ],
+    "notes": "This manifest reflects the first reviewed local build. Rebuild after changing configure flags and update this manifest to match the final bundled binary."
+  },
+  "distribution_review": {
+    "reviewed_for_release": false,
+    "review_notes": "Reviewed for prohibited GPL/nonfree flags locally, but not yet bundled into the app or approved for release."
+  }
+}
