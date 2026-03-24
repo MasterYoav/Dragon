@@ -79,6 +79,7 @@
 				FF547FF52F72515900E83EFF /* DragonTests */,
 				FF547FFF2F72515900E83EFF /* DragonUITests */,
 				FF547FE62F72515800E83EFF /* Products */,
+				FF8021A42F72B20E00A7E62A /* Documentation 2 */,
 			);
 			sourceTree = "<group>";
 		};
@@ -90,6 +91,13 @@
 				FF547FFC2F72515900E83EFF /* DragonUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		FF8021A42F72B20E00A7E62A /* Documentation 2 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = "Documentation 2";
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
