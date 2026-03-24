@@ -18,11 +18,14 @@ struct ContentView: View {
 
     let onExpansionChange: (Bool) -> Void
     let onSettingsExpansionChange: (Bool) -> Void
+    let requestArchiveDestination: (String, @escaping (URL?) -> Void) -> Void
     @State private var queuedItems: [QueuedDropItem] = []
     @State private var isDropTargeted = false
     @State private var isInspectorExpanded = false
     @State private var isSettingsExpanded = false
     @State private var hoveredActionID: DragonAction.ID?
+    @State private var actionStatus: DragonActionStatus?
+    @State private var isPerformingAction = false
 
     private let primaryActions = DragonAction.primary
     private let secondaryActions = DragonAction.secondary
@@ -52,10 +55,12 @@ struct ContentView: View {
 
     init(
         onExpansionChange: @escaping (Bool) -> Void = { _ in },
-        onSettingsExpansionChange: @escaping (Bool) -> Void = { _ in }
+        onSettingsExpansionChange: @escaping (Bool) -> Void = { _ in },
+        requestArchiveDestination: @escaping (String, @escaping (URL?) -> Void) -> Void = { _, completion in completion(nil) }
     ) {
         self.onExpansionChange = onExpansionChange
         self.onSettingsExpansionChange = onSettingsExpansionChange
+        self.requestArchiveDestination = requestArchiveDestination
     }
 
     private var isPanelExpanded: Bool {
@@ -137,6 +142,12 @@ struct ContentView: View {
             }
         }
         .frame(width: isPanelExpanded ? DragonNotchLayout.expandedInnerWidth : DragonNotchLayout.collapsedInnerWidth)
+        .dropDestination(for: URL.self) { items, _ in
+            queue(items)
+            return true
+        } isTargeted: { isTargeted in
+            isDropTargeted = isTargeted
+        }
     }
 
     private var headerBar: some View {
@@ -147,18 +158,16 @@ struct ContentView: View {
                 isInspectorExpanded.toggle()
             }
         }
-        .dropDestination(for: URL.self) { items, _ in
-            queue(items)
-            return true
-        } isTargeted: { isTargeted in
-            isDropTargeted = isTargeted
-        }
         .help(isPanelExpanded ? "Collapse Dragon" : "Expand Dragon")
     }
 
     private var expandedPanel: some View {
         VStack(spacing: 18) {
             topBar
+            if let actionStatus {
+                actionStatusView(actionStatus)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
             actionSection(actions: primaryActions)
             actionSection(actions: secondaryActions)
             stagedItemsSection
@@ -255,7 +264,7 @@ struct ContentView: View {
         let isHovered = hoveredActionID == action.id
 
         return Button {
-            isInspectorExpanded = true
+            perform(action)
         } label: {
             VStack(spacing: 10) {
                 Image(systemName: action.symbolName)
@@ -293,6 +302,59 @@ struct ContentView: View {
             hoveredActionID = hovering ? action.id : nil
         }
         .help(action.title)
+        .disabled(isActionDisabled(action))
+        .opacity(isActionDisabled(action) ? 0.45 : 1)
+    }
+
+    private func actionStatusView(_ status: DragonActionStatus) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: status.symbolName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(status.tint)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(status.title)
+                    .font(selectedFontDesign.font(size: 12, weight: .semibold))
+
+                if let detail = status.detail {
+                    Text(detail)
+                        .font(selectedFontDesign.font(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            if let outputURL = status.outputURL {
+                Button("Reveal") {
+                    NSWorkspace.shared.activateFileViewerSelecting([outputURL])
+                }
+                .buttonStyle(.glass)
+            }
+
+            Button {
+                let text = [status.title, status.detail].compactMap { $0 }.joined(separator: "\n")
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 20, height: 20)
+            }
+            .buttonStyle(.glass)
+            .help("Copy status")
+        }
+        .padding(12)
+        .frame(width: DragonNotchLayout.expandedContentWidth, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.white.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+        )
     }
 
     private var stagedItemsSection: some View {
@@ -302,6 +364,14 @@ struct ContentView: View {
                     .font(selectedFontDesign.font(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .textCase(.uppercase)
+
+                if queuedItems.isEmpty == false {
+                    Button("Clear") {
+                        queuedItems.removeAll()
+                    }
+                    .buttonStyle(.glass)
+                    .controlSize(.small)
+                }
 
                 Spacer()
 
@@ -325,7 +395,7 @@ struct ContentView: View {
 
     private var emptyState: some View {
         VStack(spacing: 10) {
-            Image(systemName: "macbook.and.arrow.trianglehead.clockwise")
+            Image(systemName: "tray.and.arrow.down.fill")
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(.secondary)
 
@@ -381,17 +451,22 @@ struct ContentView: View {
         )
     }
     private func importFiles() {
+        NotificationCenter.default.post(name: .dragonWillPresentImportPanel, object: nil)
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.item]
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
 
-        guard panel.runModal() == .OK else {
+        let response = panel.runModal()
+        NotificationCenter.default.post(name: .dragonDidDismissImportPanel, object: nil)
+
+        guard response == .OK else {
             return
         }
 
         queue(panel.urls)
+        isInspectorExpanded = true
     }
 
     private func queue(_ urls: [URL]) {
@@ -410,16 +485,93 @@ struct ContentView: View {
         queuedItems.append(contentsOf: newItems)
         isInspectorExpanded = true
     }
+
+    private func perform(_ action: DragonAction) {
+        guard isPerformingAction == false else {
+            return
+        }
+
+        switch action.kind {
+        case .compress:
+            guard queuedItems.isEmpty == false else {
+                actionStatus = .error(title: "Nothing to compress", detail: "Stage one or more files first.")
+                return
+            }
+
+            let items = queuedItems
+            requestArchiveDestination(DragonCompressionService.suggestedArchiveFileName(for: queuedItems)) { outputURL in
+                guard let outputURL else {
+                    return
+                }
+
+                isPerformingAction = true
+                actionStatus = .working(title: "Compressing files", detail: "Building a zip archive from the staged items.")
+
+                Task {
+                    do {
+                        let archiveURL = try await DragonCompressionService.compress(items: items, outputURL: outputURL)
+
+                        await MainActor.run {
+                            isPerformingAction = false
+                            actionStatus = .success(
+                                title: "Archive created",
+                                detail: archiveURL.lastPathComponent,
+                                outputURL: archiveURL
+                            )
+                        }
+                    } catch {
+                        await MainActor.run {
+                            isPerformingAction = false
+                            actionStatus = .error(
+                                title: "Compression failed",
+                                detail: error.localizedDescription
+                            )
+                        }
+                    }
+                }
+            }
+        case .convert, .quickShare, .airDrop, .finderTag, .cloudSync:
+            actionStatus = .info(
+                title: "\(action.title) is next",
+                detail: "This action is still a placeholder. Compress is the first live workflow."
+            )
+        }
+    }
+
+    private func isActionDisabled(_ action: DragonAction) -> Bool {
+        if isPerformingAction {
+            return true
+        }
+
+        switch action.kind {
+        case .compress:
+            return queuedItems.isEmpty
+        case .convert:
+            return canConvertQueuedItems == false
+        case .quickShare, .airDrop, .finderTag, .cloudSync:
+            return false
+        }
+    }
+
+    private var canConvertQueuedItems: Bool {
+        guard queuedItems.isEmpty == false else {
+            return false
+        }
+
+        return queuedItems.allSatisfy(\.isConvertible)
+    }
 }
 
 private struct QueuedDropItem: Identifiable, Hashable {
     let id = UUID()
     let url: URL
+    let bookmarkData: Data?
     let byteCount: Int64
     let isDirectory: Bool
 
     init(url: URL) {
         self.url = url
+        self.bookmarkData = try? url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
 
         let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey, .contentTypeKey])
         self.byteCount = Int64(values?.fileSize ?? 0)
@@ -455,10 +607,42 @@ private struct QueuedDropItem: Identifiable, Hashable {
             return "doc.fill"
         }
     }
+
+    var isConvertible: Bool {
+        guard isDirectory == false else {
+            return false
+        }
+
+        let supportedExtensions: Set<String> = [
+            "png", "jpg", "jpeg", "heic", "tiff", "bmp", "gif", "webp",
+            "mp4", "mov", "m4v",
+            "wav", "aif", "aiff", "m4a", "mp3",
+            "txt", "rtf", "html", "md", "pdf"
+        ]
+
+        return supportedExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    func accessibleURL() -> URL {
+        guard let bookmarkData else {
+            return url
+        }
+
+        var isStale = false
+        let resolvedURL = (try? URL(
+            resolvingBookmarkData: bookmarkData,
+            options: .withSecurityScope,
+            relativeTo: nil,
+            bookmarkDataIsStale: &isStale
+        )) ?? url
+
+        return resolvedURL
+    }
 }
 
 private struct DragonAction: Identifiable, Hashable {
     let id = UUID()
+    let kind: DragonActionKind
     let title: String
     let subtitle: String
     let symbolName: String
@@ -466,18 +650,21 @@ private struct DragonAction: Identifiable, Hashable {
 
     static let primary: [DragonAction] = [
         DragonAction(
+            kind: .compress,
             title: "Compress",
             subtitle: "Package staged files into a smaller archive.",
             symbolName: "arrow.down.right.and.arrow.up.left",
             tint: .mint
         ),
         DragonAction(
+            kind: .convert,
             title: "Convert",
             subtitle: "Transform files into another format.",
             symbolName: "arrow.triangle.2.circlepath",
             tint: .orange
         ),
         DragonAction(
+            kind: .quickShare,
             title: "Quick Share",
             subtitle: "Prepare a link-ready handoff flow.",
             symbolName: "link.badge.plus",
@@ -487,24 +674,202 @@ private struct DragonAction: Identifiable, Hashable {
 
     static let secondary: [DragonAction] = [
         DragonAction(
+            kind: .airDrop,
             title: "AirDrop",
             subtitle: "Route staged files into a nearby transfer flow.",
             symbolName: "airplayaudio",
             tint: .teal
         ),
         DragonAction(
+            kind: .finderTag,
             title: "Finder Tag",
             subtitle: "Organize incoming drops before filing them away.",
             symbolName: "tag.fill",
             tint: .pink
         ),
         DragonAction(
+            kind: .cloudSync,
             title: "Cloud Sync",
             subtitle: "Reserve this slot for supported cloud providers.",
             symbolName: "icloud.fill",
             tint: .indigo
         )
     ]
+}
+
+private enum DragonActionKind: String, Hashable {
+    case compress
+    case convert
+    case quickShare
+    case airDrop
+    case finderTag
+    case cloudSync
+}
+
+private struct DragonActionStatus: Equatable {
+    let title: String
+    let detail: String?
+    let symbolName: String
+    let tint: Color
+    let outputURL: URL?
+
+    static func working(title: String, detail: String?) -> DragonActionStatus {
+        DragonActionStatus(title: title, detail: detail, symbolName: "gearshape.2.fill", tint: .orange, outputURL: nil)
+    }
+
+    static func success(title: String, detail: String?, outputURL: URL?) -> DragonActionStatus {
+        DragonActionStatus(title: title, detail: detail, symbolName: "checkmark.circle.fill", tint: .green, outputURL: outputURL)
+    }
+
+    static func error(title: String, detail: String?) -> DragonActionStatus {
+        DragonActionStatus(title: title, detail: detail, symbolName: "xmark.octagon.fill", tint: .red, outputURL: nil)
+    }
+
+    static func info(title: String, detail: String?) -> DragonActionStatus {
+        DragonActionStatus(title: title, detail: detail, symbolName: "info.circle.fill", tint: .blue, outputURL: nil)
+    }
+}
+
+private enum DragonCompressionService {
+    static func compress(items: [QueuedDropItem], outputURL: URL) async throws -> URL {
+        guard items.isEmpty == false else {
+            throw DragonCompressionError.noItems
+        }
+
+        let stagingDirectoryURL = try makeStagingDirectory(for: items)
+
+        defer {
+            try? FileManager.default.removeItem(at: stagingDirectoryURL)
+        }
+
+        try stageItems(items: items, in: stagingDirectoryURL)
+        try await runDitto(sourceURL: stagingDirectoryURL, outputURL: outputURL)
+        return outputURL
+    }
+
+    static func suggestedArchiveFileName(for items: [QueuedDropItem]) -> String {
+        "\(archiveBaseName(for: items)).zip"
+    }
+
+    private static func runDitto(sourceURL: URL, outputURL: URL) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+            process.arguments = [
+                "-c",
+                "-k",
+                "--sequesterRsrc",
+                "--keepParent",
+                sourceURL.path,
+                outputURL.path
+            ]
+
+            let errorPipe = Pipe()
+            process.standardError = errorPipe
+
+            process.terminationHandler = { process in
+                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                let errorOutput = String(data: errorData, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                if process.terminationStatus == 0 {
+                    continuation.resume()
+                } else {
+                    let detail = (errorOutput?.isEmpty == false ? errorOutput : nil) ?? "ditto exited with status \(process.terminationStatus)."
+                    continuation.resume(throwing: DragonCompressionError.processFailed(detail))
+                }
+            }
+
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+
+    private static func makeStagingDirectory(for items: [QueuedDropItem]) throws -> URL {
+        let baseName = archiveBaseName(for: items)
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dragon-staging-\(UUID().uuidString)")
+            .appendingPathComponent(baseName, isDirectory: true)
+
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        return directoryURL
+    }
+
+    private static func stageItems(items: [QueuedDropItem], in stagingDirectoryURL: URL) throws {
+        let fileManager = FileManager.default
+
+        for item in items {
+            let sourceURL = item.accessibleURL()
+            let isSecurityScoped = sourceURL.startAccessingSecurityScopedResource()
+            defer {
+                if isSecurityScoped {
+                    sourceURL.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            var candidateURL = stagingDirectoryURL.appendingPathComponent(sourceURL.lastPathComponent, isDirectory: sourceURL.hasDirectoryPath)
+            var suffix = 2
+
+            while fileManager.fileExists(atPath: candidateURL.path) {
+                let baseName = sourceURL.deletingPathExtension().lastPathComponent
+                let pathExtension = sourceURL.pathExtension
+                let uniqueName = pathExtension.isEmpty ? "\(baseName) \(suffix)" : "\(baseName) \(suffix).\(pathExtension)"
+                candidateURL = stagingDirectoryURL.appendingPathComponent(uniqueName, isDirectory: sourceURL.hasDirectoryPath)
+                suffix += 1
+            }
+
+            try copyItem(at: sourceURL, to: candidateURL)
+        }
+    }
+
+    private static func copyItem(at sourceURL: URL, to destinationURL: URL) throws {
+        var coordinationError: NSError?
+        var readError: Error?
+
+        NSFileCoordinator().coordinate(readingItemAt: sourceURL, options: [], error: &coordinationError) { coordinatedURL in
+            do {
+                try FileManager.default.copyItem(at: coordinatedURL, to: destinationURL)
+            } catch {
+                readError = error
+            }
+        }
+
+        if let coordinationError {
+            throw coordinationError
+        }
+
+        if let readError {
+            throw readError
+        }
+    }
+
+    private static func archiveBaseName(for items: [QueuedDropItem]) -> String {
+        if items.count == 1 {
+            let source = items[0].url
+            return source.deletingPathExtension().lastPathComponent
+        }
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH-mm"
+        return "Dragon Archive \(formatter.string(from: .now))"
+    }
+}
+
+private enum DragonCompressionError: LocalizedError {
+    case noItems
+    case processFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .noItems:
+            return "No staged files were available."
+        case .processFailed(let detail):
+            return detail
+        }
+    }
 }
 
 private struct CollapsedDragonToggle: View {
@@ -666,4 +1031,6 @@ private extension View {
 extension Notification.Name {
     static let dragonShouldCollapsePanel = Notification.Name("dragonShouldCollapsePanel")
     static let dragonShouldOpenSettings = Notification.Name("dragonShouldOpenSettings")
+    static let dragonWillPresentImportPanel = Notification.Name("dragonWillPresentImportPanel")
+    static let dragonDidDismissImportPanel = Notification.Name("dragonDidDismissImportPanel")
 }

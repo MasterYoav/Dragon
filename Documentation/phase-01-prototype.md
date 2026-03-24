@@ -48,6 +48,13 @@ Build the first usable Dragon prototype around the macOS notch interaction:
   - `Finder Tag`
   - `Cloud Sync`
 - Each action is reduced to icon plus title to keep the panel compact.
+- `Compress` is now the first live action:
+  - it stages selected files into a temporary workspace
+  - asks the user where to save the resulting archive
+  - creates a `.zip` archive with `ditto`
+  - reports success or failure directly in the menu
+- `Convert` is now eligibility-gated:
+  - if the staged files are not convertible, the button is greyed out and unpressable
 
 ### File staging
 
@@ -60,6 +67,24 @@ Build the first usable Dragon prototype around the macOS notch interaction:
 - The staged-files area shows either:
   - an empty state
   - or a list of staged items with remove controls
+- The staged-files header also includes a `Clear` control when items are present.
+
+### Compression flow
+
+- Compression is now functional for single and multiple files.
+- Before compression runs, Dragon presents a save panel so the user can:
+  - choose the output folder
+  - name the archive
+- The implementation uses:
+  - a temporary staging directory
+  - security-scoped bookmarks for staged file access
+  - `NSFileCoordinator` for safer reads
+  - `ditto` to generate the final archive
+- Action status is shown inline in the menu with:
+  - success state
+  - failure state
+  - a `Reveal` button for successful archives
+  - a copy button for sharing the exact status text
 
 ### Inline settings
 
@@ -93,17 +118,21 @@ The panel host width is kept constant between collapsed and expanded states so t
 
 The earlier separate settings window created lifecycle and crash risk around auxiliary panels and picker interactions. Inline settings are simpler, safer, and better aligned with the product’s utility-panel UX.
 
+### Why AppKit-owned save panels
+
+Presenting save panels from inside the notch SwiftUI view proved fragile for this floating utility architecture. The final flow delegates save-panel ownership to the AppKit host so the modal lifecycle stays under the same controller that owns the notch panel.
+
 ## Known Limitations
 
 - The notch target is aligned to the screen center, not the physical hardware notch geometry.
-- The action buttons are placeholders and do not yet run real jobs.
+- Only `Compress` is implemented; the other actions remain placeholders.
 - The app does not yet detect clipboard-based file intake.
-- There is not yet any provider or automation backend for actions like conversion, compression, or cloud sync.
+- There is not yet any provider or automation backend for actions like conversion, quick sharing, AirDrop routing, or cloud sync.
 
 ## Next Recommended Steps
 
-1. Implement real action backends starting with compression.
-2. Add a real conversion pipeline with file-type-aware options.
+1. Add a real conversion pipeline with file-type-aware options.
+2. Implement a usable quick-share/export flow.
 3. Introduce service integrations, excluding Amazon S3 as requested.
 4. Make the activation area notch-aware per display where possible.
 5. Add tests around staging, layout state, and settings persistence.

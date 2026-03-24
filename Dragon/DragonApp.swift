@@ -7,6 +7,7 @@
 
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 @main
 struct DragonApp: App {
@@ -46,19 +47,25 @@ private final class NotchPanelController: NSObject {
     private let panelStateBridge: PanelStateBridge
     private var isExpanded = false
     private var isSettingsExpanded = false
+    private var isImportPanelPresented = false
     private var isHoveringActivationZone = false
     private var collapsedAnchorX: CGFloat?
+    private var isUpdatingPanelLayout = false
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
     private var globalMouseDownMonitor: Any?
     private var localMouseDownMonitor: Any?
+    private var importPanelWillPresentObserver: NSObjectProtocol?
+    private var importPanelDidDismissObserver: NSObjectProtocol?
+    private var savePanelHostWindow: NSWindow?
 
     override init() {
         let panelStateBridge = PanelStateBridge()
         let hostingController = NSHostingController(
             rootView: ContentView(
                 onExpansionChange: panelStateBridge.handleExpansionChange,
-                onSettingsExpansionChange: panelStateBridge.handleSettingsExpansionChange
+                onSettingsExpansionChange: panelStateBridge.handleSettingsExpansionChange,
+                requestArchiveDestination: panelStateBridge.handleArchiveDestinationRequest
             )
         )
 
@@ -104,6 +111,30 @@ private final class NotchPanelController: NSObject {
             self?.setSettingsExpanded(isSettingsExpanded, animated: true)
         }
 
+        panelStateBridge.onArchiveDestinationRequest = { [weak self] suggestedFileName, completion in
+            self?.requestArchiveDestination(suggestedFileName: suggestedFileName, completion: completion)
+        }
+
+        importPanelWillPresentObserver = NotificationCenter.default.addObserver(
+            forName: .dragonWillPresentImportPanel,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.setImportPanelPresented(true)
+            }
+        }
+
+        importPanelDidDismissObserver = NotificationCenter.default.addObserver(
+            forName: .dragonDidDismissImportPanel,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.setImportPanelPresented(false)
+            }
+        }
+
         installMouseMonitors()
     }
 
@@ -122,6 +153,14 @@ private final class NotchPanelController: NSObject {
 
         if let localMouseDownMonitor {
             NSEvent.removeMonitor(localMouseDownMonitor)
+        }
+
+        if let importPanelWillPresentObserver {
+            NotificationCenter.default.removeObserver(importPanelWillPresentObserver)
+        }
+
+        if let importPanelDidDismissObserver {
+            NotificationCenter.default.removeObserver(importPanelDidDismissObserver)
         }
     }
 
@@ -160,8 +199,81 @@ private final class NotchPanelController: NSObject {
         updatePanelLayout(animated: animated)
     }
 
+    private func setImportPanelPresented(_ isImportPanelPresented: Bool) {
+        self.isImportPanelPresented = isImportPanelPresented
+
+        if isImportPanelPresented {
+            updatePanelVisibility()
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.updatePanelVisibility()
+            }
+        }
+    }
+
+    private func requestArchiveDestination(suggestedFileName: String, completion: @escaping (URL?) -> Void) {
+        setImportPanelPresented(true)
+        NSApp.activate(ignoringOtherApps: true)
+
+        let savePanel = NSSavePanel()
+        savePanel.canCreateDirectories = true
+        savePanel.isExtensionHidden = false
+        savePanel.nameFieldLabel = "Archive Name:"
+        savePanel.nameFieldStringValue = suggestedFileName
+        savePanel.allowedContentTypes = [.zip]
+        savePanel.title = "Save Archive"
+        savePanel.message = "Choose where Dragon should save the compressed archive."
+        let hostWindow = makeSavePanelHostWindow()
+        savePanelHostWindow = hostWindow
+        hostWindow.makeKeyAndOrderFront(nil)
+
+        savePanel.beginSheetModal(for: hostWindow) { [weak self] response in
+            Task { @MainActor [weak self] in
+                self?.setImportPanelPresented(false)
+                self?.savePanelHostWindow?.orderOut(nil)
+                self?.savePanelHostWindow = nil
+                completion(response == .OK ? savePanel.url : nil)
+            }
+        }
+    }
+
+    private func makeSavePanelHostWindow() -> NSWindow {
+        if let savePanelHostWindow {
+            return savePanelHostWindow
+        }
+
+        let screenFrame = activeScreen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
+        let window = NSWindow(
+            contentRect: NSRect(
+                x: screenFrame.midX - 1,
+                y: screenFrame.midY - 1,
+                width: 2,
+                height: 2
+            ),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.alphaValue = 0
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        window.level = .screenSaver
+        window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
+        return window
+    }
+
     private func updatePanelLayout(animated: Bool) {
         guard let screen = activeScreen else {
+            return
+        }
+
+        guard isUpdatingPanelLayout == false else {
             return
         }
 
@@ -184,9 +296,18 @@ private final class NotchPanelController: NSObject {
 
         let newFrame = NSRect(x: x, y: y, width: panelFrame.width, height: panelFrame.height)
 
+        let sizeMatches = panel.contentRect(forFrameRect: panel.frame).size.equalTo(contentSize)
+        let frameMatches = panel.frame.equalTo(newFrame)
+        guard sizeMatches == false || frameMatches == false else {
+            return
+        }
+
+        isUpdatingPanelLayout = true
+        defer { isUpdatingPanelLayout = false }
+
         if animated {
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.18
+                context.duration = 0.12
                 context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                 panel.animator().setFrame(newFrame, display: true)
             }
@@ -234,7 +355,7 @@ private final class NotchPanelController: NSObject {
     }
 
     private func updatePanelVisibility() {
-        let shouldShowPanel = isExpanded || isHoveringActivationZone
+        let shouldShowPanel = isExpanded || isHoveringActivationZone || isImportPanelPresented
 
         if shouldShowPanel {
             updatePanelLayout(animated: false)
@@ -247,7 +368,7 @@ private final class NotchPanelController: NSObject {
     }
 
     private func handleOutsideClick() {
-        guard isExpanded else {
+        guard isExpanded, isImportPanelPresented == false else {
             return
         }
 
@@ -312,6 +433,7 @@ private final class NotchPanelController: NSObject {
 private final class PanelStateBridge {
     var onExpansionChange: ((Bool) -> Void)?
     var onSettingsExpansionChange: ((Bool) -> Void)?
+    var onArchiveDestinationRequest: ((String, @escaping (URL?) -> Void) -> Void)?
 
     func handleExpansionChange(_ isExpanded: Bool) {
         onExpansionChange?(isExpanded)
@@ -319,5 +441,9 @@ private final class PanelStateBridge {
 
     func handleSettingsExpansionChange(_ isSettingsExpanded: Bool) {
         onSettingsExpansionChange?(isSettingsExpanded)
+    }
+
+    func handleArchiveDestinationRequest(_ suggestedFileName: String, completion: @escaping (URL?) -> Void) {
+        onArchiveDestinationRequest?(suggestedFileName, completion)
     }
 }
