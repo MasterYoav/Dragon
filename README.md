@@ -20,6 +20,10 @@ Current actions:
 - `Tag`
 - `Cloud Sync`
 
+## Installation
+
+You can also download the dmg from [Releases](https://github.com/MasterYoav/Dragon/releases)
+
 ## Highlights
 
 - two entry modes:
