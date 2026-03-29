@@ -43,8 +43,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 @MainActor
 private final class NotchPanelController: NSObject {
-    private let panel: NSPanel
+    private static let panelAnimationDuration: TimeInterval = 0.22
+    private let panel: DragonPanel
     private let panelStateBridge: PanelStateBridge
+    private let panelContentView: PassthroughPanelContentView
+    private var entryMode: DragonEntryMode
+    private var menuBarIconStyle: DragonMenuBarIconStyle
+    private var visiblePanelHeight: CGFloat = 0
     private var isExpanded = false
     private var isSettingsExpanded = false
     private var isImportPanelPresented = false
@@ -60,26 +65,44 @@ private final class NotchPanelController: NSObject {
     private var savePanelHostWindow: NSWindow?
     private var sharingCoordinator: SharingCoordinator?
     private var panelLevelBeforeShare: NSWindow.Level?
+    private var finderTagSheetController: FinderTagSheetController?
+    private var conversionSaveAccessoryController: ConversionSaveAccessoryController?
+    private var statusItem: NSStatusItem?
+    private var pendingPanelLayoutUpdate: DispatchWorkItem?
 
     override init() {
+        let storedEntryMode = DragonEntryMode(
+            rawValue: UserDefaults.standard.string(forKey: DragonAppearanceSettings.entryModeKey) ?? DragonEntryMode.notch.rawValue
+        ) ?? .notch
+        let storedMenuBarIconStyle = DragonMenuBarIconStyle(
+            rawValue: UserDefaults.standard.string(forKey: DragonAppearanceSettings.menuBarIconStyleKey) ?? DragonMenuBarIconStyle.color.rawValue
+        ) ?? .color
         let panelStateBridge = PanelStateBridge()
-        let hostingController = NSHostingController(
+        let hostingView = NSHostingView(
             rootView: ContentView(
                 onExpansionChange: panelStateBridge.handleExpansionChange,
                 onSettingsExpansionChange: panelStateBridge.handleSettingsExpansionChange,
+                onEntryModeChange: panelStateBridge.handleEntryModeChange,
+                onMenuBarIconStyleChange: panelStateBridge.handleMenuBarIconStyleChange,
+                onVisiblePanelHeightChange: panelStateBridge.handleVisiblePanelHeightChange,
+                requestFileImport: panelStateBridge.handleFileImportRequest,
+                requestCloudSyncFolder: panelStateBridge.handleCloudSyncFolderRequest,
+                requestFinderTagSelection: panelStateBridge.handleFinderTagSelectionRequest,
                 requestArchiveDestination: panelStateBridge.handleArchiveDestinationRequest,
                 requestConversionDestination: panelStateBridge.handleConversionDestinationRequest,
                 requestAirDropShare: panelStateBridge.handleAirDropShareRequest,
                 requestQuickShare: panelStateBridge.handleQuickShareRequest
             )
         )
+        let panelContentView = PassthroughPanelContentView()
+        panelContentView.hostedView = hostingView
 
-        let panel = NSPanel(
+        let panel = DragonPanel(
             contentRect: NSRect(
                 x: 0,
                 y: 0,
                 width: DragonNotchLayout.panelHostWidth,
-                height: DragonNotchLayout.collapsedHeight
+                height: DragonNotchLayout.maximumHostHeight
             ),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -88,10 +111,13 @@ private final class NotchPanelController: NSObject {
 
         self.panel = panel
         self.panelStateBridge = panelStateBridge
+        self.panelContentView = panelContentView
+        self.entryMode = storedEntryMode
+        self.menuBarIconStyle = storedMenuBarIconStyle
 
         super.init()
 
-        panel.contentViewController = hostingController
+        panel.contentView = panelContentView
         panel.isFloatingPanel = true
         panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
@@ -114,6 +140,30 @@ private final class NotchPanelController: NSObject {
 
         panelStateBridge.onSettingsExpansionChange = { [weak self] isSettingsExpanded in
             self?.setSettingsExpanded(isSettingsExpanded, animated: true)
+        }
+
+        panelStateBridge.onEntryModeChange = { [weak self] entryMode in
+            self?.setEntryMode(entryMode)
+        }
+
+        panelStateBridge.onMenuBarIconStyleChange = { [weak self] iconStyle in
+            self?.setMenuBarIconStyle(iconStyle)
+        }
+
+        panelStateBridge.onVisiblePanelHeightChange = { [weak self] height in
+            self?.setVisiblePanelHeight(height)
+        }
+
+        panelStateBridge.onFileImportRequest = { [weak self] completion in
+            self?.requestFileImport(completion: completion)
+        }
+
+        panelStateBridge.onCloudSyncFolderRequest = { [weak self] completion in
+            self?.requestCloudSyncFolder(completion: completion)
+        }
+
+        panelStateBridge.onFinderTagSelectionRequest = { [weak self] completion in
+            self?.requestFinderTagSelection(completion: completion)
         }
 
         panelStateBridge.onArchiveDestinationRequest = { [weak self] suggestedFileName, completion in
@@ -182,6 +232,8 @@ private final class NotchPanelController: NSObject {
     }
 
     func show() {
+        configureEntryModeUI()
+        updateInteractiveRegion()
         updatePanelLayout(animated: false)
         panel.orderFrontRegardless()
         updatePanelVisibility()
@@ -196,15 +248,51 @@ private final class NotchPanelController: NSObject {
             return
         }
 
+        pendingPanelLayoutUpdate?.cancel()
+        pendingPanelLayoutUpdate = nil
+
         if isExpanded {
-            collapsedAnchorX = panel.frame.midX
+            switch entryMode {
+            case .notch:
+                collapsedAnchorX = panel.frame.midX
+            case .menuBar:
+                collapsedAnchorX = menuBarAnchorFrame?.midX
+            }
         } else {
             isSettingsExpanded = false
         }
 
         self.isExpanded = isExpanded
-        updatePanelVisibility()
-        updatePanelLayout(animated: animated)
+        updateInteractiveRegion()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                return
+            }
+
+            self.updatePanelVisibility()
+
+            if isExpanded {
+                let shouldAnimateFrame = animated && self.entryMode == .menuBar
+                self.updatePanelLayout(animated: shouldAnimateFrame)
+            } else if animated {
+                let workItem = DispatchWorkItem { [weak self] in
+                    guard let self else {
+                        return
+                    }
+
+                    self.updatePanelLayout(animated: false)
+                    self.pendingPanelLayoutUpdate = nil
+                }
+                self.pendingPanelLayoutUpdate = workItem
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.panelAnimationDuration, execute: workItem)
+            } else {
+                self.updatePanelLayout(animated: false)
+            }
+
+            if isExpanded {
+                self.panel.orderFrontRegardless()
+            }
+        }
     }
 
     private func setSettingsExpanded(_ isSettingsExpanded: Bool, animated: Bool) {
@@ -213,7 +301,10 @@ private final class NotchPanelController: NSObject {
         }
 
         self.isSettingsExpanded = isSettingsExpanded
-        updatePanelLayout(animated: animated)
+        updateInteractiveRegion()
+        DispatchQueue.main.async { [weak self] in
+            self?.updatePanelLayout(animated: animated)
+        }
     }
 
     private func setImportPanelPresented(_ isImportPanelPresented: Bool) {
@@ -226,6 +317,48 @@ private final class NotchPanelController: NSObject {
                 self?.updatePanelVisibility()
             }
         }
+    }
+
+    private func setEntryMode(_ entryMode: DragonEntryMode) {
+        guard self.entryMode != entryMode else {
+            return
+        }
+
+        let previousEntryMode = self.entryMode
+        self.entryMode = entryMode
+        if entryMode == .menuBar {
+            isHoveringActivationZone = false
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                return
+            }
+
+            self.configureEntryModeUI(previousEntryMode: previousEntryMode)
+            self.updatePanelVisibility()
+            self.updateInteractiveRegion()
+            self.updatePanelLayout(animated: false)
+        }
+    }
+
+    private func setMenuBarIconStyle(_ iconStyle: DragonMenuBarIconStyle) {
+        guard menuBarIconStyle != iconStyle else {
+            return
+        }
+
+        menuBarIconStyle = iconStyle
+        refreshStatusItemImage()
+    }
+
+    private func setVisiblePanelHeight(_ height: CGFloat) {
+        let sanitizedHeight = max(height, currentPanelContentHeight)
+        guard abs(visiblePanelHeight - sanitizedHeight) > 0.5 else {
+            return
+        }
+
+        visiblePanelHeight = sanitizedHeight
+        updateInteractiveRegion()
     }
 
     private func requestArchiveDestination(suggestedFileName: String, completion: @escaping (URL?) -> Void) {
@@ -254,6 +387,86 @@ private final class NotchPanelController: NSObject {
         }
     }
 
+    private func requestCloudSyncFolder(completion: @escaping (URL?) -> Void) {
+        setImportPanelPresented(true)
+        NSApp.activate(ignoringOtherApps: true)
+
+        let openPanel = NSOpenPanel()
+        openPanel.allowsMultipleSelection = false
+        openPanel.canChooseDirectories = true
+        openPanel.canChooseFiles = false
+        openPanel.canCreateDirectories = true
+        openPanel.prompt = "Choose Folder"
+        openPanel.title = "Choose Cloud Folder"
+        openPanel.message = "Choose a synced folder, such as iCloud Drive, Dropbox, or Google Drive."
+
+        let iCloudDriveURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
+        if FileManager.default.fileExists(atPath: iCloudDriveURL.path) {
+            openPanel.directoryURL = iCloudDriveURL
+        }
+
+        let hostWindow = makeSavePanelHostWindow()
+        savePanelHostWindow = hostWindow
+        hostWindow.makeKeyAndOrderFront(nil)
+
+        openPanel.beginSheetModal(for: hostWindow) { [weak self] response in
+            Task { @MainActor [weak self] in
+                self?.setImportPanelPresented(false)
+                self?.savePanelHostWindow?.orderOut(nil)
+                self?.savePanelHostWindow = nil
+                completion(response == .OK ? openPanel.url : nil)
+            }
+        }
+    }
+
+    private func requestFileImport(completion: @escaping ([URL]) -> Void) {
+        setImportPanelPresented(true)
+        NSApp.activate(ignoringOtherApps: true)
+
+        let openPanel = NSOpenPanel()
+        openPanel.allowedContentTypes = [.item]
+        openPanel.allowsMultipleSelection = true
+        openPanel.canChooseDirectories = true
+        openPanel.canChooseFiles = true
+        openPanel.title = "Choose Files"
+        openPanel.message = "Select files or folders to stage in Dragon."
+
+        let hostWindow = makeSavePanelHostWindow()
+        savePanelHostWindow = hostWindow
+        hostWindow.makeKeyAndOrderFront(nil)
+
+        openPanel.beginSheetModal(for: hostWindow) { [weak self] response in
+            Task { @MainActor [weak self] in
+                self?.setImportPanelPresented(false)
+                self?.savePanelHostWindow?.orderOut(nil)
+                self?.savePanelHostWindow = nil
+                completion(response == .OK ? openPanel.urls : [])
+            }
+        }
+    }
+
+    private func requestFinderTagSelection(completion: @escaping (DragonFinderTagSelection?) -> Void) {
+        setImportPanelPresented(true)
+        NSApp.activate(ignoringOtherApps: true)
+
+        let hostWindow = makeSavePanelHostWindow()
+        savePanelHostWindow = hostWindow
+        hostWindow.makeKeyAndOrderFront(nil)
+
+        let controller = FinderTagSheetController(initialName: "Dragon") { [weak self] selection in
+            Task { @MainActor [weak self] in
+                self?.setImportPanelPresented(false)
+                self?.savePanelHostWindow?.orderOut(nil)
+                self?.savePanelHostWindow = nil
+                self?.finderTagSheetController = nil
+                completion(selection)
+            }
+        }
+        finderTagSheetController = controller
+        controller.beginSheet(for: hostWindow)
+    }
+
     private func requestConversionDestination(
         suggestedBaseName: String,
         formats: [DragonConversionFormat],
@@ -274,9 +487,19 @@ private final class NotchPanelController: NSObject {
         savePanel.nameFieldStringValue = "\(suggestedBaseName).\(initialFormat.preferredFileExtension)"
         savePanel.title = "Convert File"
         savePanel.message = "Choose the output format and where Dragon should save the converted file."
+        savePanel.allowedContentTypes = [initialFormat.utType].compactMap { $0 }
 
         let popupButton = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 220, height: 28), pullsDown: false)
         popupButton.addItems(withTitles: formats.map(\.title))
+        let accessoryController = ConversionSaveAccessoryController(
+            savePanel: savePanel,
+            popupButton: popupButton,
+            suggestedBaseName: suggestedBaseName,
+            formats: formats
+        )
+        conversionSaveAccessoryController = accessoryController
+        popupButton.target = accessoryController
+        popupButton.action = #selector(ConversionSaveAccessoryController.selectionDidChange(_:))
         savePanel.accessoryView = popupButton
 
         let hostWindow = makeSavePanelHostWindow()
@@ -288,6 +511,7 @@ private final class NotchPanelController: NSObject {
                 self?.setImportPanelPresented(false)
                 self?.savePanelHostWindow?.orderOut(nil)
                 self?.savePanelHostWindow = nil
+                self?.conversionSaveAccessoryController = nil
 
                 guard response == .OK else {
                     completion(nil)
@@ -296,8 +520,7 @@ private final class NotchPanelController: NSObject {
 
                 let selectedFormat = formats[popupButton.indexOfSelectedItem]
                 let selectedURL = savePanel.url ?? URL(fileURLWithPath: suggestedBaseName)
-                let normalizedURL = selectedURL.deletingPathExtension().appendingPathExtension(selectedFormat.preferredFileExtension)
-                completion(DragonConversionSelection(format: selectedFormat, outputURL: normalizedURL))
+                completion(DragonConversionSelection(format: selectedFormat, outputURL: selectedURL))
             }
         }
     }
@@ -435,15 +658,23 @@ private final class NotchPanelController: NSObject {
         let screenFrame = screen.frame
         let anchorX: CGFloat
 
-        if isExpanded, let collapsedAnchorX {
+        if entryMode == .menuBar, let menuBarAnchorFrame {
+            collapsedAnchorX = menuBarAnchorFrame.midX
+            anchorX = menuBarAnchorFrame.midX
+        } else if isExpanded, let collapsedAnchorX {
             anchorX = collapsedAnchorX
         } else {
             anchorX = screenFrame.midX + DragonNotchLayout.collapsedHorizontalCenterOffset
         }
 
         let x = anchorX - (panelFrame.width / 2)
-        let topPadding = isExpanded ? DragonNotchLayout.expandedTopPadding : DragonNotchLayout.collapsedTopPadding
-        let y = screenFrame.maxY - panelFrame.height - topPadding
+        let y: CGFloat
+
+        if entryMode == .menuBar {
+            y = screenFrame.maxY - panelFrame.height - 33
+        } else {
+            y = screenFrame.maxY - panelFrame.height
+        }
 
         panel.setContentSize(contentSize)
 
@@ -458,7 +689,7 @@ private final class NotchPanelController: NSObject {
         isUpdatingPanelLayout = true
         defer { isUpdatingPanelLayout = false }
 
-        panel.setFrame(newFrame, display: true)
+        panel.setFrame(newFrame, display: true, animate: animated && panel.isVisible)
 
         if isExpanded == false {
             collapsedAnchorX = panel.frame.midX
@@ -484,23 +715,51 @@ private final class NotchPanelController: NSObject {
         }
 
         localMouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            if event.window === self?.panel {
+                return event
+            }
+
             self?.handleOutsideClick()
             return event
         }
     }
 
+    private func screenLocation(for event: NSEvent) -> NSPoint {
+        if let window = event.window {
+            return window.convertPoint(toScreen: event.locationInWindow)
+        }
+
+        return NSEvent.mouseLocation
+    }
+
     private func handleMouseLocationChange() {
+        guard entryMode == .notch else {
+            if isHoveringActivationZone {
+                isHoveringActivationZone = false
+                NotificationCenter.default.post(name: .dragonSetHoverActivation, object: false)
+                updatePanelVisibility()
+            }
+            return
+        }
+
         let isHoveringActivationZone = activationZone?.contains(NSEvent.mouseLocation) ?? false
         guard self.isHoveringActivationZone != isHoveringActivationZone else {
             return
         }
 
         self.isHoveringActivationZone = isHoveringActivationZone
+        NotificationCenter.default.post(name: .dragonSetHoverActivation, object: isHoveringActivationZone)
         updatePanelVisibility()
     }
 
     private func updatePanelVisibility() {
-        let shouldShowPanel = isExpanded || isHoveringActivationZone || isImportPanelPresented
+        let shouldShowPanel: Bool
+        switch entryMode {
+        case .notch:
+            shouldShowPanel = isExpanded || isHoveringActivationZone || isImportPanelPresented
+        case .menuBar:
+            shouldShowPanel = isExpanded || isImportPanelPresented
+        }
 
         if shouldShowPanel {
             updatePanelLayout(animated: false)
@@ -518,8 +777,16 @@ private final class NotchPanelController: NSObject {
         }
 
         let mouseLocation = NSEvent.mouseLocation
-        guard panel.frame.contains(mouseLocation) == false else {
+        if entryMode == .menuBar, let menuBarAnchorFrame, menuBarAnchorFrame.contains(mouseLocation) {
             return
+        }
+
+        if panel.frame.contains(mouseLocation) {
+            let windowPoint = panel.convertPoint(fromScreen: mouseLocation)
+            let localPoint = panelContentView.convert(windowPoint, from: nil)
+            if panelContentView.hitTest(localPoint) != nil || panelContentView.visibleContentRect.contains(localPoint) {
+                return
+            }
         }
 
         NotificationCenter.default.post(name: .dragonShouldCollapsePanel, object: nil)
@@ -531,7 +798,7 @@ private final class NotchPanelController: NSObject {
         }
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.16
+            context.duration = Self.panelAnimationDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().alphaValue = alphaValue
         }
@@ -548,8 +815,8 @@ private final class NotchPanelController: NSObject {
         let anchorX = collapsedAnchorX ?? (screenFrame.midX + DragonNotchLayout.collapsedHorizontalCenterOffset)
         let x = anchorX - (width / 2)
         let y = screenFrame.maxY - height
-
-        return NSRect(x: x, y: y, width: width, height: height)
+        let zone = NSRect(x: x, y: y, width: width, height: height)
+        return zone.insetBy(dx: -DragonNotchLayout.hoverActivationInsetX, dy: -DragonNotchLayout.hoverActivationInsetY)
     }
 
     private var activeScreen: NSScreen? {
@@ -565,12 +832,171 @@ private final class NotchPanelController: NSObject {
     }
 
     private var currentContentSize: NSSize {
-        if isExpanded {
-            let height = DragonNotchLayout.expandedHeight + (isSettingsExpanded ? DragonNotchLayout.expandedSettingsHeight : 0)
-            return NSSize(width: DragonNotchLayout.panelHostWidth, height: height)
+        let height: CGFloat
+        if entryMode == .notch {
+            height = DragonNotchLayout.maximumHostHeight
+        } else {
+            height = reservedPanelContentHeight
         }
 
-        return NSSize(width: DragonNotchLayout.panelHostWidth, height: DragonNotchLayout.collapsedHeight)
+        return NSSize(
+            width: DragonNotchLayout.panelHostWidth,
+            height: height
+        )
+    }
+
+    private var currentPanelContentHeight: CGFloat {
+        if isExpanded {
+            return max(
+                0,
+                DragonNotchLayout.expandedTopPadding
+                + DragonNotchLayout.expandedHeight
+                + (isSettingsExpanded ? DragonNotchLayout.expandedSettingsHeight : 0)
+            )
+        }
+
+        return DragonNotchLayout.collapsedTopPadding + DragonNotchLayout.collapsedHeight
+    }
+
+    private var reservedPanelContentHeight: CGFloat {
+        guard isExpanded else {
+            return currentPanelContentHeight
+        }
+
+        return max(
+            0,
+            DragonNotchLayout.expandedTopPadding
+            + DragonNotchLayout.expandedHeight
+            + DragonNotchLayout.expandedSettingsHeight
+        )
+    }
+
+    private var interactiveContentHeight: CGFloat {
+        max(visiblePanelHeight, currentPanelContentHeight)
+    }
+
+    private func updateInteractiveRegion() {
+        panelContentView.interactiveHeight = interactiveContentHeight
+    }
+
+    private func configureEntryModeUI(previousEntryMode: DragonEntryMode? = nil) {
+        switch entryMode {
+        case .notch:
+            hideStatusItem()
+        case .menuBar:
+            installStatusItemIfNeeded()
+            statusItem?.isVisible = true
+        }
+    }
+
+    private func installStatusItemIfNeeded() {
+        if let statusItem {
+            statusItem.length = NSStatusItem.squareLength
+            refreshStatusItemImage()
+            statusItem.button?.target = self
+            statusItem.button?.action = #selector(handleStatusItemPress)
+            return
+        }
+
+        let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        if let button = statusItem.button {
+            button.image = menuBarLogoImage()
+            button.imagePosition = .imageOnly
+            button.toolTip = "Dragon"
+            button.target = self
+            button.action = #selector(handleStatusItemPress)
+            button.sendAction(on: [.leftMouseUp])
+        }
+        self.statusItem = statusItem
+        refreshStatusItemImage()
+    }
+
+    private func hideStatusItem() {
+        guard let statusItem else {
+            return
+        }
+
+        statusItem.button?.image = nil
+        statusItem.button?.target = nil
+        statusItem.button?.action = nil
+        statusItem.length = 0
+    }
+
+    private func menuBarLogoImage() -> NSImage? {
+        guard let image = NSImage(named: menuBarIconStyle.assetName) else {
+            return nil
+        }
+
+        let size = NSSize(width: 22, height: 22)
+        image.size = size
+        image.isTemplate = false
+        return image
+    }
+
+    @objc
+    private func handleStatusItemPress() {
+        NSApp.activate(ignoringOtherApps: true)
+        toggleMenuBarPresentation()
+    }
+
+    private func toggleMenuBarPresentation() {
+        NotificationCenter.default.post(name: .dragonTogglePanelExpanded, object: nil)
+    }
+
+    private func refreshStatusItemImage() {
+        statusItem?.button?.image = menuBarLogoImage()
+    }
+
+    private var menuBarAnchorFrame: NSRect? {
+        guard
+            let button = statusItem?.button,
+            let window = button.window
+        else {
+            return nil
+        }
+
+        return window.convertToScreen(button.frame)
+    }
+}
+
+private final class DragonPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+private final class PassthroughPanelContentView: NSView {
+    var interactiveHeight: CGFloat = 0
+
+    var hostedView: NSView? {
+        didSet {
+            oldValue?.removeFromSuperview()
+
+            guard let hostedView else {
+                return
+            }
+
+            hostedView.frame = bounds
+            hostedView.autoresizingMask = [.width, .height]
+            addSubview(hostedView)
+        }
+    }
+
+    var visibleContentRect: NSRect {
+        let height = min(max(interactiveHeight, 0), bounds.height)
+        return NSRect(
+            x: 0,
+            y: bounds.height - height,
+            width: bounds.width,
+            height: height
+        )
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard visibleContentRect.contains(point) else {
+            return nil
+        }
+
+        return super.hitTest(point)
     }
 }
 
@@ -578,6 +1004,12 @@ private final class NotchPanelController: NSObject {
 private final class PanelStateBridge {
     var onExpansionChange: ((Bool) -> Void)?
     var onSettingsExpansionChange: ((Bool) -> Void)?
+    var onEntryModeChange: ((DragonEntryMode) -> Void)?
+    var onMenuBarIconStyleChange: ((DragonMenuBarIconStyle) -> Void)?
+    var onVisiblePanelHeightChange: ((CGFloat) -> Void)?
+    var onFileImportRequest: ((@escaping ([URL]) -> Void) -> Void)?
+    var onCloudSyncFolderRequest: ((@escaping (URL?) -> Void) -> Void)?
+    var onFinderTagSelectionRequest: ((@escaping (DragonFinderTagSelection?) -> Void) -> Void)?
     var onArchiveDestinationRequest: ((String, @escaping (URL?) -> Void) -> Void)?
     var onConversionDestinationRequest: ((String, [DragonConversionFormat], @escaping (DragonConversionSelection?) -> Void) -> Void)?
     var onAirDropShareRequest: (([URL], @escaping (Result<String, Error>) -> Void) -> Void)?
@@ -589,6 +1021,30 @@ private final class PanelStateBridge {
 
     func handleSettingsExpansionChange(_ isSettingsExpanded: Bool) {
         onSettingsExpansionChange?(isSettingsExpanded)
+    }
+
+    func handleEntryModeChange(_ entryMode: DragonEntryMode) {
+        onEntryModeChange?(entryMode)
+    }
+
+    func handleMenuBarIconStyleChange(_ iconStyle: DragonMenuBarIconStyle) {
+        onMenuBarIconStyleChange?(iconStyle)
+    }
+
+    func handleVisiblePanelHeightChange(_ height: CGFloat) {
+        onVisiblePanelHeightChange?(height)
+    }
+
+    func handleFileImportRequest(_ completion: @escaping ([URL]) -> Void) {
+        onFileImportRequest?(completion)
+    }
+
+    func handleCloudSyncFolderRequest(_ completion: @escaping (URL?) -> Void) {
+        onCloudSyncFolderRequest?(completion)
+    }
+
+    func handleFinderTagSelectionRequest(_ completion: @escaping (DragonFinderTagSelection?) -> Void) {
+        onFinderTagSelectionRequest?(completion)
     }
 
     func handleArchiveDestinationRequest(_ suggestedFileName: String, completion: @escaping (URL?) -> Void) {
@@ -609,6 +1065,153 @@ private final class PanelStateBridge {
 
     func handleQuickShareRequest(_ urls: [URL], _ completion: @escaping (Result<String, Error>) -> Void) {
         onQuickShareRequest?(urls, completion)
+    }
+}
+
+@MainActor
+private final class FinderTagSheetController: NSWindowController {
+    private let completion: (DragonFinderTagSelection?) -> Void
+    private let nameField = NSTextField(string: "")
+    private let colorPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+
+    init(initialName: String, completion: @escaping (DragonFinderTagSelection?) -> Void) {
+        self.completion = completion
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 200),
+            styleMask: [.titled, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        super.init(window: window)
+
+        window.title = "Finder Tag"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isReleasedWhenClosed = false
+
+        nameField.stringValue = initialName
+        colorPopup.removeAllItems()
+        DragonFinderLabelColorOption.allCases.forEach { option in
+            colorPopup.addItem(withTitle: option.title)
+        }
+        colorPopup.selectItem(at: 0)
+
+        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 200))
+        contentView.translatesAutoresizingMaskIntoConstraints = false
+        window.contentView = contentView
+
+        let titleLabel = NSTextField(labelWithString: "Choose Finder Tag")
+        titleLabel.font = .systemFont(ofSize: 20, weight: .semibold)
+
+        let bodyLabel = NSTextField(wrappingLabelWithString: "Dragon will apply the selected Finder tag to all staged files.")
+        bodyLabel.textColor = .secondaryLabelColor
+
+        let nameLabel = NSTextField(labelWithString: "Tag name")
+        nameLabel.font = .systemFont(ofSize: 12, weight: .medium)
+
+        let colorLabel = NSTextField(labelWithString: "Tag color")
+        colorLabel.font = .systemFont(ofSize: 12, weight: .medium)
+
+        let cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancelSelection))
+        let applyButton = NSButton(title: "Apply Tag", target: self, action: #selector(applySelection))
+        applyButton.keyEquivalent = "\r"
+
+        let buttonStack = NSStackView(views: [cancelButton, applyButton])
+        buttonStack.orientation = .horizontal
+        buttonStack.alignment = .centerY
+        buttonStack.distribution = .fillEqually
+        buttonStack.spacing = 12
+
+        let stack = NSStackView(views: [titleLabel, bodyLabel, nameLabel, nameField, colorLabel, colorPopup, buttonStack])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        contentView.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 20),
+            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -20),
+            nameField.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            colorPopup.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            buttonStack.widthAnchor.constraint(equalTo: stack.widthAnchor)
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func beginSheet(for parentWindow: NSWindow) {
+        guard let window else {
+            completion(nil)
+            return
+        }
+
+        parentWindow.beginSheet(window)
+        window.makeFirstResponder(nameField)
+    }
+
+    @objc
+    private func applySelection() {
+        closeSheet(
+            with: DragonFinderTagSelection(
+                name: nameField.stringValue,
+                labelNumber: DragonFinderLabelColorOption.allCases[safe: colorPopup.indexOfSelectedItem]?.labelNumber
+            )
+        )
+    }
+
+    @objc
+    private func cancelSelection() {
+        closeSheet(with: nil)
+    }
+
+    private func closeSheet(with selection: DragonFinderTagSelection?) {
+        guard let window, let parentWindow = window.sheetParent else {
+            completion(selection)
+            return
+        }
+
+        parentWindow.endSheet(window)
+        window.orderOut(nil)
+        completion(selection)
+    }
+}
+
+@MainActor
+private final class ConversionSaveAccessoryController: NSObject {
+    private weak var savePanel: NSSavePanel?
+    private weak var popupButton: NSPopUpButton?
+    private let suggestedBaseName: String
+    private let formats: [DragonConversionFormat]
+
+    init(
+        savePanel: NSSavePanel,
+        popupButton: NSPopUpButton,
+        suggestedBaseName: String,
+        formats: [DragonConversionFormat]
+    ) {
+        self.savePanel = savePanel
+        self.popupButton = popupButton
+        self.suggestedBaseName = suggestedBaseName
+        self.formats = formats
+    }
+
+    @objc
+    func selectionDidChange(_ sender: NSPopUpButton) {
+        guard formats.indices.contains(sender.indexOfSelectedItem), let savePanel else {
+            return
+        }
+
+        let selectedFormat = formats[sender.indexOfSelectedItem]
+        savePanel.allowedContentTypes = [selectedFormat.utType].compactMap { $0 }
+        savePanel.nameFieldStringValue = "\(suggestedBaseName).\(selectedFormat.preferredFileExtension)"
     }
 }
 
@@ -680,5 +1283,69 @@ private enum PanelShareError: LocalizedError {
         case .unavailable(let detail):
             return detail
         }
+    }
+}
+
+private enum DragonFinderLabelColorOption: CaseIterable {
+    case none
+    case gray
+    case green
+    case purple
+    case blue
+    case yellow
+    case red
+    case orange
+
+    var title: String {
+        switch self {
+        case .none:
+            return "None"
+        case .gray:
+            return "Gray"
+        case .green:
+            return "Green"
+        case .purple:
+            return "Purple"
+        case .blue:
+            return "Blue"
+        case .yellow:
+            return "Yellow"
+        case .red:
+            return "Red"
+        case .orange:
+            return "Orange"
+        }
+    }
+
+    // Finder label numbers map to the standard macOS tag color order.
+    var labelNumber: Int? {
+        switch self {
+        case .none:
+            return nil
+        case .gray:
+            return 1
+        case .green:
+            return 2
+        case .purple:
+            return 3
+        case .blue:
+            return 4
+        case .yellow:
+            return 5
+        case .red:
+            return 6
+        case .orange:
+            return 7
+        }
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        guard indices.contains(index) else {
+            return nil
+        }
+
+        return self[index]
     }
 }

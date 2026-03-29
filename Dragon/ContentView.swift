@@ -10,18 +10,30 @@ import AVFoundation
 import CoreText
 import ImageIO
 import PDFKit
+import QuickLookThumbnailing
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
+    private let panelAnimation = Animation.easeInOut(duration: 0.22)
     @AppStorage(DragonAppearanceSettings.backgroundRedKey) private var backgroundRed = 0.13
     @AppStorage(DragonAppearanceSettings.backgroundGreenKey) private var backgroundGreen = 0.16
     @AppStorage(DragonAppearanceSettings.backgroundBlueKey) private var backgroundBlue = 0.22
     @AppStorage(DragonAppearanceSettings.backgroundOpacityKey) private var backgroundOpacity = 0.78
     @AppStorage(DragonAppearanceSettings.fontDesignKey) private var fontDesignRawValue = DragonFontDesign.rounded.rawValue
+    @AppStorage(DragonAppearanceSettings.enabledActionsKey) private var enabledActionsRawValue = DragonActionKind.allCases.map(\.rawValue).joined(separator: ",")
+    @AppStorage(DragonAppearanceSettings.entryModeKey) private var entryModeRawValue = DragonEntryMode.notch.rawValue
+    @AppStorage(DragonAppearanceSettings.menuBarIconStyleKey) private var menuBarIconStyleRawValue = DragonMenuBarIconStyle.color.rawValue
+    @AppStorage(DragonAppearanceSettings.skipQuitConfirmationKey) private var skipQuitConfirmation = false
 
     let onExpansionChange: (Bool) -> Void
     let onSettingsExpansionChange: (Bool) -> Void
+    let onEntryModeChange: (DragonEntryMode) -> Void
+    let onMenuBarIconStyleChange: (DragonMenuBarIconStyle) -> Void
+    let onVisiblePanelHeightChange: (CGFloat) -> Void
+    let requestFileImport: (@escaping ([URL]) -> Void) -> Void
+    let requestCloudSyncFolder: (@escaping (URL?) -> Void) -> Void
+    let requestFinderTagSelection: (@escaping (DragonFinderTagSelection?) -> Void) -> Void
     let requestArchiveDestination: (String, @escaping (URL?) -> Void) -> Void
     let requestConversionDestination: (String, [DragonConversionFormat], @escaping (DragonConversionSelection?) -> Void) -> Void
     let requestAirDropShare: ([URL], @escaping (Result<String, Error>) -> Void) -> Void
@@ -33,9 +45,29 @@ struct ContentView: View {
     @State private var hoveredActionID: DragonAction.ID?
     @State private var actionStatus: DragonActionStatus?
     @State private var isPerformingAction = false
+    @State private var selectedSettingsTab: DragonSettingsTab = .appearance
+    @State private var pendingModeSwitchReopen = false
+    @State private var pendingModeSwitchRestoreSettings = false
+    @State private var notchRevealProgress: CGFloat = 0
+    @State private var isHoveringActivationZone = false
 
     private let primaryActions = DragonAction.primary
     private let secondaryActions = DragonAction.secondary
+
+    private var allActions: [DragonAction] {
+        availableActions.filter { enabledActionKinds.contains($0.kind) }
+    }
+
+    private var availableActions: [DragonAction] {
+        primaryActions + secondaryActions
+    }
+
+    private var enabledActionKinds: Set<DragonActionKind> {
+        let kinds = enabledActionsRawValue
+            .split(separator: ",")
+            .compactMap { DragonActionKind(rawValue: String($0)) }
+        return kinds.isEmpty ? Set(DragonActionKind.allCases) : Set(kinds)
+    }
 
     private var totalByteCount: Int64 {
         queuedItems.reduce(0) { $0 + $1.byteCount }
@@ -54,7 +86,7 @@ struct ContentView: View {
 
     private var byteSummary: String {
         guard totalByteCount > 0 else {
-            return "No files staged yet"
+            return "Add Files"
         }
 
         return ByteCountFormatter.string(fromByteCount: totalByteCount, countStyle: .file)
@@ -63,6 +95,12 @@ struct ContentView: View {
     init(
         onExpansionChange: @escaping (Bool) -> Void = { _ in },
         onSettingsExpansionChange: @escaping (Bool) -> Void = { _ in },
+        onEntryModeChange: @escaping (DragonEntryMode) -> Void = { _ in },
+        onMenuBarIconStyleChange: @escaping (DragonMenuBarIconStyle) -> Void = { _ in },
+        onVisiblePanelHeightChange: @escaping (CGFloat) -> Void = { _ in },
+        requestFileImport: @escaping (@escaping ([URL]) -> Void) -> Void = { completion in completion([]) },
+        requestCloudSyncFolder: @escaping (@escaping (URL?) -> Void) -> Void = { completion in completion(nil) },
+        requestFinderTagSelection: @escaping (@escaping (DragonFinderTagSelection?) -> Void) -> Void = { completion in completion(nil) },
         requestArchiveDestination: @escaping (String, @escaping (URL?) -> Void) -> Void = { _, completion in completion(nil) },
         requestConversionDestination: @escaping (String, [DragonConversionFormat], @escaping (DragonConversionSelection?) -> Void) -> Void = { _, _, completion in completion(nil) },
         requestAirDropShare: @escaping ([URL], @escaping (Result<String, Error>) -> Void) -> Void = { _, completion in completion(.failure(DragonShareError.unavailable("AirDrop is unavailable."))) },
@@ -70,6 +108,12 @@ struct ContentView: View {
     ) {
         self.onExpansionChange = onExpansionChange
         self.onSettingsExpansionChange = onSettingsExpansionChange
+        self.onEntryModeChange = onEntryModeChange
+        self.onMenuBarIconStyleChange = onMenuBarIconStyleChange
+        self.onVisiblePanelHeightChange = onVisiblePanelHeightChange
+        self.requestFileImport = requestFileImport
+        self.requestCloudSyncFolder = requestCloudSyncFolder
+        self.requestFinderTagSelection = requestFinderTagSelection
         self.requestArchiveDestination = requestArchiveDestination
         self.requestConversionDestination = requestConversionDestination
         self.requestAirDropShare = requestAirDropShare
@@ -84,6 +128,22 @@ struct ContentView: View {
         DragonNotchLayout.panelHostWidth
     }
 
+    private var notchShellWidth: CGFloat {
+        let collapsedWidth = DragonNotchLayout.collapsedInnerWidth + (isHoveringActivationZone && isPanelExpanded == false ? DragonNotchLayout.collapsedHoverWidthIncrease : 0)
+        return collapsedWidth
+            + ((DragonNotchLayout.expandedInnerWidth - DragonNotchLayout.collapsedInnerWidth) * notchRevealProgress)
+    }
+
+    private var notchShellHeight: CGFloat {
+        let collapsedHeight = DragonNotchLayout.collapsedHeight + (isHoveringActivationZone && isPanelExpanded == false ? DragonNotchLayout.collapsedHoverHeightIncrease : 0)
+        return collapsedHeight
+            + ((notchExpandedShellHeight - DragonNotchLayout.collapsedHeight) * notchRevealProgress)
+    }
+
+    private var notchExpandedShellHeight: CGFloat {
+        DragonNotchLayout.expandedHeight + (isSettingsExpanded ? DragonNotchLayout.expandedSettingsHeight : 0)
+    }
+
     private var menuBackgroundColor: Color {
         Color(
             .sRGB,
@@ -94,66 +154,170 @@ struct ContentView: View {
         )
     }
 
+    private var usesMaterialShellBackground: Bool {
+        backgroundOpacity < 0.999
+    }
+
+    private var menuColorScheme: ColorScheme {
+        let luminance = (0.2126 * backgroundRed) + (0.7152 * backgroundGreen) + (0.0722 * backgroundBlue)
+        let prefersLightAppearance = backgroundOpacity > 0.98 && luminance > 0.92
+        return prefersLightAppearance ? .light : .dark
+    }
+
+    private var primaryLabelColor: Color {
+        menuColorScheme == .light ? .black : .white
+    }
+
     private var selectedFontDesign: DragonFontDesign {
         DragonFontDesign(rawValue: fontDesignRawValue) ?? .rounded
     }
 
-    var body: some View {
-        notchPanel
-            .padding(.horizontal, 0)
-            .padding(.top, isPanelExpanded ? DragonNotchLayout.expandedTopPadding : DragonNotchLayout.collapsedTopPadding)
-            .padding(.bottom, isPanelExpanded ? 12 : 6)
-            .frame(width: panelWidth, alignment: .top)
-            .background(Color.clear)
-            .onAppear {
-                onExpansionChange(isPanelExpanded)
-                onSettingsExpansionChange(isSettingsExpanded)
-            }
-            .onChange(of: isPanelExpanded) { _, isExpanded in
-                onExpansionChange(isExpanded)
-            }
-            .onChange(of: isSettingsExpanded) { _, isExpanded in
-                onSettingsExpansionChange(isExpanded)
-            }
-            .onChange(of: isDropTargeted) { _, isTargeted in
-                guard isTargeted else {
-                    return
-                }
-
-                isInspectorExpanded = true
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .dragonShouldCollapsePanel)) { _ in
-                guard isInspectorExpanded else {
-                    return
-                }
-
-                withAnimation(.easeOut(duration: 0.14)) {
-                    isInspectorExpanded = false
-                    isSettingsExpanded = false
-                }
-            }
-            .animation(.easeOut(duration: 0.14), value: isPanelExpanded)
+    private var selectedEntryMode: DragonEntryMode {
+        DragonEntryMode(rawValue: entryModeRawValue) ?? .notch
     }
 
-    private var notchPanel: some View {
-        GlassEffectContainer(spacing: 18) {
-            Group {
-                if isPanelExpanded {
-                    expandedPanel
-                        .transition(.asymmetric(
-                            insertion: .opacity.animation(.easeOut(duration: 0.10)),
-                            removal: .opacity.animation(.easeOut(duration: 0.08))
-                        ))
-                } else {
-                    headerBar
-                        .transition(.asymmetric(
-                            insertion: .opacity.animation(.easeOut(duration: 0.08)),
-                            removal: .opacity.animation(.easeOut(duration: 0.06))
-                        ))
+    private var topPanelPadding: CGFloat {
+        isPanelExpanded ? DragonNotchLayout.expandedTopPadding : DragonNotchLayout.collapsedTopPadding
+    }
+
+    private var entryModeTopInset: CGFloat { 0 }
+
+    private var visiblePanelHeight: CGFloat {
+        if isPanelExpanded {
+            let settingsHeight = isSettingsExpanded ? DragonNotchLayout.expandedSettingsHeight : 0
+            return max(0, DragonNotchLayout.expandedTopPadding + entryModeTopInset + DragonNotchLayout.expandedHeight + settingsHeight)
+        }
+
+        return max(0, DragonNotchLayout.collapsedTopPadding + entryModeTopInset + DragonNotchLayout.collapsedHeight)
+    }
+
+    private var selectedMenuBarIconStyle: DragonMenuBarIconStyle {
+        DragonMenuBarIconStyle(rawValue: menuBarIconStyleRawValue) ?? .color
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            notchPanel
+                .padding(.horizontal, 0)
+                .padding(.top, topPanelPadding + entryModeTopInset)
+                .frame(width: panelWidth, alignment: .top)
+        }
+        .frame(width: panelWidth, alignment: .top)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Color.clear)
+        .onAppear {
+            notchRevealProgress = isPanelExpanded ? 1 : 0
+            onExpansionChange(isPanelExpanded)
+            onSettingsExpansionChange(isSettingsExpanded)
+            onEntryModeChange(selectedEntryMode)
+            onMenuBarIconStyleChange(selectedMenuBarIconStyle)
+        }
+        .onChange(of: isPanelExpanded) { _, isExpanded in
+            let targetProgress: CGFloat = isExpanded ? 1 : 0
+            if selectedEntryMode == .notch {
+                withAnimation(panelAnimation) {
+                    notchRevealProgress = targetProgress
+                }
+            } else {
+                notchRevealProgress = targetProgress
+            }
+            onExpansionChange(isExpanded)
+        }
+        .onChange(of: isSettingsExpanded) { _, isExpanded in
+            onSettingsExpansionChange(isExpanded)
+        }
+        .onChange(of: entryModeRawValue) { _, _ in
+            onEntryModeChange(selectedEntryMode)
+            notchRevealProgress = isPanelExpanded ? 1 : 0
+
+            let shouldReopen = pendingModeSwitchReopen
+            let shouldRestoreSettings = pendingModeSwitchRestoreSettings
+            pendingModeSwitchReopen = false
+            pendingModeSwitchRestoreSettings = false
+
+            guard shouldReopen else {
+                return
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                withAnimation(panelAnimation) {
+                    isInspectorExpanded = true
+                    isSettingsExpanded = shouldRestoreSettings
                 }
             }
         }
-        .frame(width: isPanelExpanded ? DragonNotchLayout.expandedInnerWidth : DragonNotchLayout.collapsedInnerWidth)
+        .onChange(of: menuBarIconStyleRawValue) { _, _ in
+            onMenuBarIconStyleChange(selectedMenuBarIconStyle)
+        }
+        .onChange(of: isDropTargeted) { _, isTargeted in
+            guard isTargeted else {
+                return
+            }
+
+            isInspectorExpanded = true
+        }
+        .onPreferenceChange(DragonVisiblePanelHeightPreferenceKey.self) { height in
+            onVisiblePanelHeightChange(max(height, visiblePanelHeight))
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dragonSetHoverActivation)) { notification in
+            guard let value = notification.object as? Bool else {
+                return
+            }
+
+            withAnimation(panelAnimation) {
+                isHoveringActivationZone = value
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dragonShouldCollapsePanel)) { _ in
+            guard isInspectorExpanded else {
+                return
+            }
+
+            withAnimation(panelAnimation) {
+                isInspectorExpanded = false
+                isSettingsExpanded = false
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dragonSetPanelExpanded)) { notification in
+            guard
+                let value = notification.object as? Bool,
+                selectedEntryMode == .menuBar
+            else {
+                return
+            }
+
+            withAnimation(panelAnimation) {
+                isInspectorExpanded = value
+                if value == false {
+                    isSettingsExpanded = false
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dragonTogglePanelExpanded)) { _ in
+            guard selectedEntryMode == .menuBar else {
+                return
+            }
+
+            withAnimation(panelAnimation) {
+                isInspectorExpanded.toggle()
+                if isInspectorExpanded == false {
+                    isSettingsExpanded = false
+                }
+            }
+        }
+    }
+
+    private var notchPanel: some View {
+        Group {
+            if selectedEntryMode == .notch {
+                notchModePanel
+            } else {
+                menuBarModePanel
+            }
+        }
+        .frame(width: notchShellWidth)
+        .animation(panelAnimation, value: notchRevealProgress)
+        .animation(panelAnimation, value: isSettingsExpanded)
         .dropDestination(for: URL.self) { items, _ in
             queue(items)
             return true
@@ -162,37 +326,117 @@ struct ContentView: View {
         }
     }
 
-    private var headerBar: some View {
-        CollapsedDragonToggle(isDropTargeted: isDropTargeted)
-        .contentShape(RoundedRectangle(cornerRadius: DragonNotchLayout.collapsedCornerRadius, style: .continuous))
-        .onTapGesture {
-            withAnimation(.easeOut(duration: 0.14)) {
-                isInspectorExpanded.toggle()
+    private var notchModePanel: some View {
+        GlassEffectContainer(spacing: 18) {
+            ZStack(alignment: .top) {
+                expandedPanel
+                    .frame(
+                        width: DragonNotchLayout.expandedInnerWidth,
+                        height: notchExpandedShellHeight,
+                        alignment: .top
+                    )
+                    .mask(
+                        VStack(spacing: 0) {
+                            Rectangle()
+                                .frame(width: DragonNotchLayout.expandedInnerWidth, height: notchShellHeight)
+                            Spacer(minLength: 0)
+                        }
+                        .frame(
+                            width: DragonNotchLayout.expandedInnerWidth,
+                            height: notchExpandedShellHeight,
+                            alignment: .top
+                        )
+                    )
+                    .allowsHitTesting(isPanelExpanded)
+
+                if notchRevealProgress < 0.001 {
+                    headerBar
+                        .allowsHitTesting(true)
+                }
+            }
+            .frame(width: notchShellWidth, height: notchShellHeight, alignment: .top)
+            .clipShape(
+                DragonCollapsedNotchShape(
+                    cornerRadius: DragonNotchLayout.collapsedCornerRadius * max(0, 1 - notchRevealProgress)
+                )
+            )
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .preference(
+                            key: DragonVisiblePanelHeightPreferenceKey.self,
+                            value: proxy.size.height + topPanelPadding + entryModeTopInset
+                        )
+                }
+            )
+        }
+        .frame(width: notchShellWidth, height: notchShellHeight, alignment: .top)
+    }
+
+    private var menuBarModePanel: some View {
+        GlassEffectContainer(spacing: 18) {
+            Group {
+                if isPanelExpanded {
+                    expandedPanel
+                        .background(
+                            GeometryReader { proxy in
+                                Color.clear
+                                    .preference(
+                                        key: DragonVisiblePanelHeightPreferenceKey.self,
+                                        value: proxy.size.height + topPanelPadding + entryModeTopInset
+                                    )
+                            }
+                        )
+                        .transition(.opacity)
+                } else {
+                    headerBar
+                        .background(
+                            GeometryReader { proxy in
+                                Color.clear
+                                    .preference(
+                                        key: DragonVisiblePanelHeightPreferenceKey.self,
+                                        value: proxy.size.height + topPanelPadding + entryModeTopInset
+                                    )
+                            }
+                        )
+                }
             }
         }
+    }
+
+    private var headerBar: some View {
+        Button {
+            withAnimation(panelAnimation) {
+                isInspectorExpanded.toggle()
+            }
+        } label: {
+            CollapsedDragonToggle(isDropTargeted: isDropTargeted, isHoveringActivationZone: isHoveringActivationZone)
+                .contentShape(DragonCollapsedNotchShape(cornerRadius: DragonNotchLayout.collapsedCornerRadius))
+        }
+        .buttonStyle(.plain)
         .help(isPanelExpanded ? "Collapse Dragon" : "Expand Dragon")
     }
 
     private var expandedPanel: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 12) {
             topBar
             if let actionStatus {
                 actionStatusView(actionStatus)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
-            actionSection(actions: primaryActions)
-            actionSection(actions: secondaryActions)
+            actionGrid
             stagedItemsSection
             if isSettingsExpanded {
                 inlineSettingsSection
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .padding(16)
+        .padding(12)
         .frame(width: DragonNotchLayout.expandedInnerWidth)
         .background(
             RoundedRectangle(cornerRadius: 30, style: .continuous)
                 .fill(.ultraThinMaterial)
+                .opacity(usesMaterialShellBackground ? 1 : 0)
         )
         .background(
             RoundedRectangle(cornerRadius: 30, style: .continuous)
@@ -202,54 +446,62 @@ struct ContentView: View {
             RoundedRectangle(cornerRadius: 30, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
         )
+        .environment(\.colorScheme, menuColorScheme)
     }
 
     private var topBar: some View {
         HStack(alignment: .center, spacing: 16) {
-            Text("Dragon")
-                .font(selectedFontDesign.font(size: 18, weight: .semibold))
+            Image("DragonLogo")
+                .resizable()
+                .scaledToFit()
+                .frame(height: 26)
 
             Spacer(minLength: 0)
 
             Button {
-                withAnimation(.easeOut(duration: 0.14)) {
+                withAnimation(panelAnimation) {
                     isSettingsExpanded.toggle()
                 }
             } label: {
-                Image(systemName: isSettingsExpanded ? "slider.horizontal.3" : "gearshape.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                    .frame(width: 18, height: 18)
-                    .foregroundStyle(.white)
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(primaryLabelColor)
+                    .frame(width: 30, height: 30)
+                    .background(
+                        Circle()
+                            .fill(Color.white.opacity(0.08))
+                    )
+                    .overlay(
+                        Circle()
+                            .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+                    )
             }
-            .buttonStyle(.glass)
+            .buttonStyle(.plain)
             .help(isSettingsExpanded ? "Hide settings" : "Open settings")
-
-            Button("Choose Files") {
-                importFiles()
+            .overlay {
+                RightClickOverlay {
+                    confirmQuitIfNeeded()
+                }
             }
-            .buttonStyle(.glassProminent)
-            .tint(.white)
-            .foregroundStyle(.white)
         }
     }
 
     private var inlineSettingsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Appearance")
-                    .font(selectedFontDesign.font(size: 13, weight: .semibold))
-
-                Spacer()
-
-                Button("Done") {
-                    withAnimation(.easeOut(duration: 0.14)) {
-                        isSettingsExpanded = false
-                    }
+                ForEach(DragonSettingsTab.allCases) { tab in
+                    settingsTabButton(tab)
                 }
-                .buttonStyle(.glass)
             }
 
-            DragonInlineSettingsView()
+            switch selectedSettingsTab {
+            case .appearance:
+                DragonInlineSettingsView()
+            case .actions:
+                actionsSettingsView
+            case .settings:
+                placeholderSettingsView
+            }
         }
         .padding(14)
         .frame(width: DragonNotchLayout.expandedContentWidth, alignment: .leading)
@@ -263,9 +515,227 @@ struct ContentView: View {
         )
     }
 
-    private func actionSection(actions: [DragonAction]) -> some View {
-        HStack(spacing: DragonNotchLayout.actionTileSpacing) {
-            ForEach(actions) { action in
+    private func confirmQuitIfNeeded() {
+        guard skipQuitConfirmation == false else {
+            NSApp.terminate(nil)
+            return
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "This will quit the app. Are you sure?"
+        alert.informativeText = "Dragon will close immediately."
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Cancel")
+
+        let checkbox = NSButton(checkboxWithTitle: "Don't ask me this in the future", target: nil, action: nil)
+        alert.accessoryView = checkbox
+
+        NSApp.activate(ignoringOtherApps: true)
+
+        if let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible }) {
+            alert.beginSheetModal(for: window) { response in
+                if response == .alertFirstButtonReturn {
+                    skipQuitConfirmation = checkbox.state == .on
+                    NSApp.terminate(nil)
+                }
+            }
+            return
+        }
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            skipQuitConfirmation = checkbox.state == .on
+            NSApp.terminate(nil)
+        }
+    }
+
+    private func settingsTabButton(_ tab: DragonSettingsTab) -> some View {
+        Button {
+            selectedSettingsTab = tab
+        } label: {
+            Text(tab.title)
+                .font(selectedFontDesign.font(size: 11, weight: .semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(selectedSettingsTab == tab ? Color.accentColor.opacity(0.22) : Color.white.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(selectedSettingsTab == tab ? Color.accentColor.opacity(0.6) : Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private var actionsSettingsView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Choose which actions appear in Dragon.")
+                .font(selectedFontDesign.font(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            VStack(spacing: 8) {
+                ForEach(availableActions, id: \.kind) { action in
+                    actionVisibilityRow(action)
+                }
+            }
+        }
+    }
+
+    private func actionVisibilityRow(_ action: DragonAction) -> some View {
+        let isEnabled = enabledActionKinds.contains(action.kind)
+
+        return Button {
+            toggleActionVisibility(action.kind)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: action.symbolName)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(action.tint)
+                    .frame(width: 28, height: 28)
+                    .background(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(action.tint.opacity(0.14))
+                    )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(action.title)
+                        .font(selectedFontDesign.font(size: 12, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Text(action.subtitle)
+                        .font(selectedFontDesign.font(size: 10.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+
+                Spacer()
+
+                Image(systemName: isEnabled ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(isEnabled ? Color.accentColor : Color.white.opacity(0.35))
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var placeholderSettingsView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Choose how Dragon is opened.")
+                .font(selectedFontDesign.font(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                ForEach(DragonEntryMode.allCases) { mode in
+                    entryModeButton(mode)
+                }
+            }
+
+            Text(selectedEntryMode == .notch
+                 ? "Notch mode reveals Dragon from the top-center hover target."
+                 : "Menu Bar mode opens Dragon from the menu bar logo instead of the notch target.")
+                .font(selectedFontDesign.font(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if selectedEntryMode == .menuBar {
+                menuBarIconStylePicker
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 8)
+    }
+
+    private func entryModeButton(_ mode: DragonEntryMode) -> some View {
+        Button {
+            let shouldReopen = isInspectorExpanded
+            let shouldRestoreSettings = isSettingsExpanded
+            pendingModeSwitchReopen = shouldReopen
+            pendingModeSwitchRestoreSettings = shouldRestoreSettings
+
+            if shouldReopen {
+                withAnimation(.easeOut(duration: 0.14)) {
+                    isInspectorExpanded = false
+                    isSettingsExpanded = false
+                }
+            }
+
+            entryModeRawValue = mode.rawValue
+        } label: {
+            Text(mode.title)
+                .font(selectedFontDesign.font(size: 11, weight: .semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 9)
+        }
+        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(selectedEntryMode == mode ? Color.accentColor.opacity(0.22) : Color.white.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(selectedEntryMode == mode ? Color.accentColor.opacity(0.6) : Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private var menuBarIconStylePicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Menu bar icon")
+                .font(selectedFontDesign.font(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                ForEach(DragonMenuBarIconStyle.allCases) { style in
+                    menuBarIconStyleButton(style)
+                }
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    private func menuBarIconStyleButton(_ style: DragonMenuBarIconStyle) -> some View {
+        Button {
+            menuBarIconStyleRawValue = style.rawValue
+        } label: {
+            HStack(spacing: 8) {
+                Image(style.assetName)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 18, height: 18)
+
+                Text(style.title)
+                    .font(selectedFontDesign.font(size: 11, weight: .semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 9)
+        }
+        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(selectedMenuBarIconStyle == style ? Color.accentColor.opacity(0.22) : Color.white.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(selectedMenuBarIconStyle == style ? Color.accentColor.opacity(0.6) : Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private var actionGrid: some View {
+        LazyVGrid(
+            columns: Array(
+                repeating: GridItem(.flexible(minimum: DragonNotchLayout.actionTileWidth), spacing: DragonNotchLayout.actionTileSpacing),
+                count: 5
+            ),
+            alignment: .center,
+            spacing: 8
+        ) {
+            ForEach(allActions) { action in
                 actionCard(action)
             }
         }
@@ -278,25 +748,26 @@ struct ContentView: View {
         return Button {
             perform(action)
         } label: {
-            VStack(spacing: 10) {
+            VStack(spacing: 8) {
                 Image(systemName: action.symbolName)
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 38, height: 38)
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 32, height: 32)
                     .background(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .fill(action.tint.opacity(0.16))
                     )
                     .foregroundStyle(action.tint)
 
                 Text(action.title)
-                    .font(selectedFontDesign.font(size: 13, weight: .semibold))
+                    .font(selectedFontDesign.font(size: 11, weight: .semibold))
                     .foregroundStyle(.primary)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
+                    .minimumScaleFactor(0.8)
             }
             .frame(
-                minWidth: DragonNotchLayout.actionTileMinimumWidth,
-                maxWidth: DragonNotchLayout.actionTileMaximumWidth,
+                minWidth: DragonNotchLayout.actionTileWidth,
+                maxWidth: .infinity,
                 minHeight: DragonNotchLayout.actionTileHeight,
                 alignment: .center
             )
@@ -370,7 +841,7 @@ struct ContentView: View {
     }
 
     private var stagedItemsSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Staged files")
                     .font(selectedFontDesign.font(size: 12, weight: .semibold))
@@ -391,18 +862,37 @@ struct ContentView: View {
                     .font(selectedFontDesign.font(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
             }
-            .frame(width: DragonNotchLayout.expandedContentWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if queuedItems.isEmpty {
                 emptyState
             } else {
-                VStack(spacing: 8) {
-                    ForEach(queuedItems) { item in
-                        stagedItemRow(item)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: 10) {
+                        ForEach(queuedItems) { item in
+                            stagedItemTile(item)
+                        }
                     }
+                    .padding(.vertical, 2)
                 }
+                .frame(height: DragonNotchLayout.stagedItemsViewportHeight, alignment: .topLeading)
             }
         }
+        .padding(10)
+        .frame(width: DragonNotchLayout.expandedContentWidth, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(Color.black.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .onTapGesture {
+            importFiles()
+        }
+        .help("Click empty space here or drop files to stage them")
     }
 
     private var emptyState: some View {
@@ -415,70 +905,62 @@ struct ContentView: View {
                 .font(selectedFontDesign.font(size: 14, weight: .semibold))
 
         }
-        .frame(width: DragonNotchLayout.expandedContentWidth)
-        .padding(.vertical, 24)
-        .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(Color.black.opacity(0.12))
-        )
+        .frame(width: DragonNotchLayout.expandedContentWidth - 28)
+        .frame(height: DragonNotchLayout.stagedItemsViewportHeight)
     }
 
-    private func stagedItemRow(_ item: QueuedDropItem) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: item.symbolName)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 30, height: 30)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(0.12))
-                )
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(item.url.lastPathComponent)
-                    .font(selectedFontDesign.font(size: 13, weight: .semibold))
-                    .lineLimit(1)
-                Text(item.detailText)
-                    .font(selectedFontDesign.font(size: 11.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 0)
+    private func stagedItemTile(_ item: QueuedDropItem) -> some View {
+        ZStack(alignment: .topTrailing) {
+            stagedItemTileContent(item)
+                .draggable(item.accessibleURL()) {
+                    stagedItemTileContent(item)
+                }
 
             Button {
                 queuedItems.removeAll { $0.id == item.id }
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .bold))
-                    .frame(width: 24, height: 24)
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 16, height: 16)
+                    .background(Circle().fill(Color.red))
             }
-            .buttonStyle(.glass)
-            .help("Remove \(item.url.lastPathComponent)")
+            .buttonStyle(.plain)
+            .padding(.top, 2)
+            .padding(.trailing, 2)
+                .help("Remove \(item.displayName)")
         }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.white.opacity(0.08))
-        )
+        .frame(width: DragonNotchLayout.stagedItemTileWidth, alignment: .top)
+    }
+
+    private func stagedItemTileContent(_ item: QueuedDropItem) -> some View {
+        VStack(spacing: 6) {
+            StagedFilePreviewIcon(item: item)
+                .frame(width: 52, height: 52)
+
+            Text(item.displayName)
+                .font(selectedFontDesign.font(size: 11, weight: .semibold))
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .frame(width: DragonNotchLayout.stagedItemTileWidth - 8)
+        }
+        .frame(width: DragonNotchLayout.stagedItemTileWidth, height: DragonNotchLayout.stagedItemsViewportHeight, alignment: .top)
+    }
+
+    private func stagedFileIcon(for item: QueuedDropItem) -> NSImage {
+        let image = NSWorkspace.shared.icon(forFile: item.accessibleURL().path)
+        image.size = NSSize(width: 64, height: 64)
+        return image
     }
     private func importFiles() {
-        NotificationCenter.default.post(name: .dragonWillPresentImportPanel, object: nil)
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.item]
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = true
+        requestFileImport { urls in
+            guard urls.isEmpty == false else {
+                return
+            }
 
-        let response = panel.runModal()
-        NotificationCenter.default.post(name: .dragonDidDismissImportPanel, object: nil)
-
-        guard response == .OK else {
-            return
+            queue(urls)
+            isInspectorExpanded = true
         }
-
-        queue(panel.urls)
-        isInspectorExpanded = true
     }
 
     private func queue(_ urls: [URL]) {
@@ -600,11 +1082,23 @@ struct ContentView: View {
             return queuedItems.isEmpty
         case .convert:
             return canConvertQueuedItems == false
-        case .quickShare, .airDrop:
+        case .quickShare, .airDrop, .finderTag, .cloudSync:
             return queuedItems.isEmpty
-        case .finderTag, .cloudSync:
-            return false
         }
+    }
+
+    private func toggleActionVisibility(_ kind: DragonActionKind) {
+        var updatedKinds = enabledActionKinds
+        if updatedKinds.contains(kind) {
+            updatedKinds.remove(kind)
+        } else {
+            updatedKinds.insert(kind)
+        }
+
+        enabledActionsRawValue = DragonActionKind.allCases
+            .filter { updatedKinds.contains($0) }
+            .map(\.rawValue)
+            .joined(separator: ",")
     }
 
     private var canConvertQueuedItems: Bool {
@@ -643,11 +1137,81 @@ struct ContentView: View {
             requestQuickShare(stagedShareURLs) { result in
                 handleShareResult(result, actionTitle: action.title)
             }
-        case .finderTag, .cloudSync, .compress, .convert:
-            actionStatus = .info(
-                title: "\(action.title) is next",
-                detail: "This action is still a placeholder. Compress, Convert, AirDrop, and Quick Share are live workflows."
-            )
+        case .finderTag:
+            guard queuedItems.isEmpty == false else {
+                actionStatus = .error(title: "Nothing to tag", detail: "Stage one or more files first.")
+                return
+            }
+
+            requestFinderTagSelection { selection in
+                guard let selection else {
+                    return
+                }
+
+                isPerformingAction = true
+                actionStatus = .working(
+                    title: "Applying Finder tag",
+                    detail: "Adding the \(selection.name) tag to the staged files."
+                )
+
+                let items = queuedItems
+                Task {
+                    do {
+                        try DragonFinderTagService.applyTag(selection, to: items)
+
+                        await MainActor.run {
+                            isPerformingAction = false
+                            actionStatus = .success(
+                                title: "Finder tag applied",
+                                detail: DragonFinderTagService.successDetail(for: selection.name, itemCount: items.count),
+                                outputURL: items.first?.url.deletingLastPathComponent()
+                            )
+                        }
+                    } catch {
+                        await MainActor.run {
+                            isPerformingAction = false
+                            actionStatus = .error(title: "Finder Tag failed", detail: error.localizedDescription)
+                        }
+                    }
+                }
+            }
+        case .cloudSync:
+            guard queuedItems.isEmpty == false else {
+                actionStatus = .error(title: "Nothing to sync", detail: "Stage one or more files first.")
+                return
+            }
+
+            requestCloudSyncFolder { destinationFolder in
+                guard let destinationFolder else {
+                    return
+                }
+
+                let items = queuedItems
+                isPerformingAction = true
+                actionStatus = .working(title: "Syncing to cloud folder", detail: "Copying staged files into the selected synced folder.")
+
+                Task {
+                    do {
+                        let syncedFolderURL = try DragonCloudSyncService.sync(items: items, into: destinationFolder)
+
+                        await MainActor.run {
+                            isPerformingAction = false
+                            actionStatus = .success(
+                                title: "Cloud sync complete",
+                                detail: syncedFolderURL.lastPathComponent,
+                                outputURL: syncedFolderURL
+                            )
+                        }
+                    } catch {
+                        await MainActor.run {
+                            isPerformingAction = false
+                            actionStatus = .error(title: "Cloud Sync failed", detail: error.localizedDescription)
+                        }
+                    }
+                }
+            }
+        case .compress, .convert:
+            return
         }
     }
 
@@ -686,6 +1250,14 @@ private struct QueuedDropItem: Identifiable, Hashable {
 
         let sizeText = ByteCountFormatter.string(fromByteCount: byteCount, countStyle: .file)
         return sizeText
+    }
+
+    var displayName: String {
+        if isDirectory {
+            return url.lastPathComponent
+        }
+
+        return url.deletingPathExtension().lastPathComponent
     }
 
     var symbolName: String {
@@ -746,6 +1318,58 @@ private struct QueuedDropItem: Identifiable, Hashable {
     }
 }
 
+private struct StagedFilePreviewIcon: View {
+    let item: QueuedDropItem
+
+    @State private var thumbnail: NSImage?
+
+    var body: some View {
+        Image(nsImage: thumbnail ?? fallbackIcon)
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
+            .task(id: item.id) {
+                thumbnail = await DragonFilePreview.thumbnail(for: item, size: CGSize(width: 96, height: 96))
+            }
+    }
+
+    private var fallbackIcon: NSImage {
+        let image = NSWorkspace.shared.icon(forFile: item.accessibleURL().path)
+        image.size = NSSize(width: 64, height: 64)
+        return image
+    }
+}
+
+private enum DragonFilePreview {
+    static func thumbnail(for item: QueuedDropItem, size: CGSize) async -> NSImage? {
+        let url = item.accessibleURL()
+        let shouldStopAccessing = url.startAccessingSecurityScopedResource()
+        defer {
+            if shouldStopAccessing {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let request = QLThumbnailGenerator.Request(
+            fileAt: url,
+            size: size,
+            scale: NSScreen.main?.backingScaleFactor ?? 2,
+            representationTypes: .thumbnail
+        )
+
+        return await withCheckedContinuation { continuation in
+            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { representation, error in
+                guard error == nil, let representation else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                continuation.resume(returning: representation.nsImage)
+            }
+        }
+    }
+}
+
 private struct DragonAction: Identifiable, Hashable {
     let id = UUID()
     let kind: DragonActionKind
@@ -771,7 +1395,7 @@ private struct DragonAction: Identifiable, Hashable {
         ),
         DragonAction(
             kind: .quickShare,
-            title: "Quick Share",
+            title: "Share",
             subtitle: "Prepare a link-ready handoff flow.",
             symbolName: "link.badge.plus",
             tint: .blue
@@ -788,7 +1412,7 @@ private struct DragonAction: Identifiable, Hashable {
         ),
         DragonAction(
             kind: .finderTag,
-            title: "Finder Tag",
+            title: "Tag",
             subtitle: "Organize incoming drops before filing them away.",
             symbolName: "tag.fill",
             tint: .pink
@@ -803,13 +1427,73 @@ private struct DragonAction: Identifiable, Hashable {
     ]
 }
 
-private enum DragonActionKind: String, Hashable {
+private enum DragonActionKind: String, Hashable, CaseIterable {
     case compress
     case convert
     case quickShare
     case airDrop
     case finderTag
     case cloudSync
+}
+
+private enum DragonSettingsTab: String, CaseIterable, Identifiable {
+    case appearance
+    case actions
+    case settings
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .appearance:
+            return "Appearance"
+        case .actions:
+            return "Actions"
+        case .settings:
+            return "Settings"
+        }
+    }
+}
+
+enum DragonEntryMode: String, CaseIterable, Identifiable {
+    case notch
+    case menuBar
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .notch:
+            return "Notch"
+        case .menuBar:
+            return "Menu Bar"
+        }
+    }
+}
+
+enum DragonMenuBarIconStyle: String, CaseIterable, Identifiable {
+    case color
+    case white
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .color:
+            return "Color"
+        case .white:
+            return "White"
+        }
+    }
+
+    var assetName: String {
+        switch self {
+        case .color:
+            return "DragonLogo"
+        case .white:
+            return "WhiteDragonLogo"
+        }
+    }
 }
 
 private enum DragonShareError: LocalizedError {
@@ -819,6 +1503,31 @@ private enum DragonShareError: LocalizedError {
         switch self {
         case .unavailable(let detail):
             return detail
+        }
+    }
+}
+
+private enum DragonFinderTagError: LocalizedError {
+    case noItems
+    case invalidName
+
+    var errorDescription: String? {
+        switch self {
+        case .noItems:
+            return "Stage one or more files before applying a Finder tag."
+        case .invalidName:
+            return "Enter a Finder tag name before applying the tag."
+        }
+    }
+}
+
+private enum DragonCloudSyncError: LocalizedError {
+    case noItems
+
+    var errorDescription: String? {
+        switch self {
+        case .noItems:
+            return "Stage one or more files before syncing."
         }
     }
 }
@@ -1084,6 +1793,11 @@ enum DragonConversionFormat: String, CaseIterable, Identifiable, Hashable {
 struct DragonConversionSelection {
     let format: DragonConversionFormat
     let outputURL: URL
+}
+
+struct DragonFinderTagSelection {
+    let name: String
+    let labelNumber: Int?
 }
 
 enum DragonConversionCatalog {
@@ -1424,6 +2138,150 @@ private enum DragonCompressionService {
     }
 }
 
+private enum DragonFinderTagService {
+    static func applyTag(_ selection: DragonFinderTagSelection, to items: [QueuedDropItem]) throws {
+        guard items.isEmpty == false else {
+            throw DragonFinderTagError.noItems
+        }
+
+        let tagName = selection.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard tagName.isEmpty == false else {
+            throw DragonFinderTagError.invalidName
+        }
+
+        for item in items {
+            let sourceURL = item.accessibleURL()
+            let isSecurityScoped = sourceURL.startAccessingSecurityScopedResource()
+            defer {
+                if isSecurityScoped {
+                    sourceURL.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            var coordinationError: NSError?
+            var writeError: Error?
+
+            NSFileCoordinator().coordinate(writingItemAt: sourceURL, options: .forMerging, error: &coordinationError) { coordinatedURL in
+                do {
+                    var resourceValues = try coordinatedURL.resourceValues(forKeys: [.tagNamesKey, .labelNumberKey])
+                    var tagNames = resourceValues.tagNames ?? []
+                    if tagNames.contains(tagName) == false {
+                        tagNames.append(tagName)
+                    }
+                    resourceValues.tagNames = tagNames
+                    resourceValues.labelNumber = selection.labelNumber
+                    var mutableURL = coordinatedURL
+                    try mutableURL.setResourceValues(resourceValues)
+                } catch {
+                    writeError = error
+                }
+            }
+
+            if let coordinationError {
+                throw coordinationError
+            }
+
+            if let writeError {
+                throw writeError
+            }
+        }
+    }
+
+    static func successDetail(for tagName: String, itemCount: Int) -> String {
+        if itemCount == 1 {
+            return "Added the \(tagName) tag to 1 item."
+        }
+
+        return "Added the \(tagName) tag to \(itemCount) items."
+    }
+}
+
+private enum DragonCloudSyncService {
+    static func sync(items: [QueuedDropItem], into destinationFolder: URL) throws -> URL {
+        guard items.isEmpty == false else {
+            throw DragonCloudSyncError.noItems
+        }
+
+        let folderURL = try makeSyncFolder(in: destinationFolder, itemCount: items.count)
+        let destinationIsSecurityScoped = folderURL.startAccessingSecurityScopedResource()
+        defer {
+            if destinationIsSecurityScoped {
+                folderURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
+
+        for item in items {
+            let sourceURL = item.accessibleURL()
+            let sourceIsSecurityScoped = sourceURL.startAccessingSecurityScopedResource()
+            defer {
+                if sourceIsSecurityScoped {
+                    sourceURL.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            var candidateURL = uniqueDestinationURL(for: sourceURL, in: folderURL)
+            var suffix = 2
+
+            while FileManager.default.fileExists(atPath: candidateURL.path) {
+                candidateURL = uniqueDestinationURL(for: sourceURL, in: folderURL, suffix: suffix)
+                suffix += 1
+            }
+
+            try copyItem(at: sourceURL, to: candidateURL)
+        }
+
+        return folderURL
+    }
+
+    private static func makeSyncFolder(in destinationFolder: URL, itemCount: Int) throws -> URL {
+        if itemCount == 1 {
+            return destinationFolder
+        }
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH-mm"
+        let folderName = "Dragon Sync \(formatter.string(from: .now))"
+        return destinationFolder.appendingPathComponent(folderName, isDirectory: true)
+    }
+
+    private static func uniqueDestinationURL(for sourceURL: URL, in folderURL: URL, suffix: Int? = nil) -> URL {
+        let baseName = sourceURL.deletingPathExtension().lastPathComponent
+        let pathExtension = sourceURL.pathExtension
+        let finalName: String
+
+        if let suffix {
+            finalName = pathExtension.isEmpty ? "\(baseName) \(suffix)" : "\(baseName) \(suffix).\(pathExtension)"
+        } else {
+            finalName = sourceURL.lastPathComponent
+        }
+
+        return folderURL.appendingPathComponent(finalName, isDirectory: sourceURL.hasDirectoryPath)
+    }
+
+    private static func copyItem(at sourceURL: URL, to destinationURL: URL) throws {
+        var coordinationError: NSError?
+        var readError: Error?
+
+        NSFileCoordinator().coordinate(readingItemAt: sourceURL, options: [], error: &coordinationError) { coordinatedURL in
+            do {
+                try FileManager.default.copyItem(at: coordinatedURL, to: destinationURL)
+            } catch {
+                readError = error
+            }
+        }
+
+        if let coordinationError {
+            throw coordinationError
+        }
+
+        if let readError {
+            throw readError
+        }
+    }
+}
+
 private enum DragonConversionService {
     static func convert(item: QueuedDropItem, to format: DragonConversionFormat, outputURL: URL) async throws -> URL {
         let sourceURL = item.accessibleURL()
@@ -1434,43 +2292,81 @@ private enum DragonConversionService {
             }
         }
 
-        let normalizedOutputURL = normalizedOutputURL(for: outputURL, format: format)
-
         switch format.category {
         case .image:
-            try convertImage(at: sourceURL, to: format, outputURL: normalizedOutputURL)
+            try convertImage(at: sourceURL, to: format, outputURL: outputURL)
         case .audio:
-            try await convertAudio(at: sourceURL, to: format, outputURL: normalizedOutputURL)
+            try await convertAudio(at: sourceURL, to: format, outputURL: outputURL)
         case .video:
-            try await convertVideo(at: sourceURL, to: format, outputURL: normalizedOutputURL)
+            try await convertVideo(at: sourceURL, to: format, outputURL: outputURL)
         case .document:
-            try convertDocument(at: sourceURL, sourceExtension: item.canonicalExtension, to: format, outputURL: normalizedOutputURL)
+            try convertDocument(at: sourceURL, sourceExtension: item.canonicalExtension, to: format, outputURL: outputURL)
         }
 
-        return normalizedOutputURL
-    }
-
-    private static func normalizedOutputURL(for outputURL: URL, format: DragonConversionFormat) -> URL {
-        if outputURL.pathExtension.lowercased() == format.preferredFileExtension {
-            return outputURL
-        }
-
-        return outputURL.deletingPathExtension().appendingPathExtension(format.preferredFileExtension)
+        return outputURL
     }
 
     private static func convertImage(at sourceURL: URL, to format: DragonConversionFormat, outputURL: URL) throws {
+        switch format {
+        case .jpeg, .png, .tiff, .bmp, .gif:
+            try convertBitmapImage(at: sourceURL, to: format, outputURL: outputURL)
+        case .heic, .webP:
+            try convertImageWithImageIO(at: sourceURL, to: format, outputURL: outputURL)
+        default:
+            throw DragonConversionError.unsupportedConversion("Dragon does not support exporting this image format.")
+        }
+    }
+
+    private static func convertBitmapImage(at sourceURL: URL, to format: DragonConversionFormat, outputURL: URL) throws {
         guard
-            let imageSource = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
-            let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil),
-            let destinationType = format.utType?.identifier as CFString?,
-            let destination = CGImageDestinationCreateWithURL(outputURL as CFURL, destinationType, 1, nil)
+            let image = NSImage(contentsOf: sourceURL),
+            let tiffData = image.tiffRepresentation,
+            let bitmap = NSBitmapImageRep(data: tiffData),
+            let fileType = bitmapFileType(for: format)
         else {
             throw DragonConversionError.unsupportedConversion("Dragon could not read this image.")
         }
 
-        let properties: CFDictionary
+        let properties: [NSBitmapImageRep.PropertyKey: Any]
         switch format {
         case .jpeg:
+            properties = [.compressionFactor: 0.92]
+        default:
+            properties = [:]
+        }
+
+        guard let data = bitmap.representation(using: fileType, properties: properties) else {
+            throw DragonConversionError.unsupportedConversion("Dragon could not export this image as \(format.title).")
+        }
+
+        try data.write(to: outputURL, options: .atomic)
+    }
+
+    private static func convertImageWithImageIO(at sourceURL: URL, to format: DragonConversionFormat, outputURL: URL) throws {
+        guard let imageSource = CGImageSourceCreateWithURL(sourceURL as CFURL, nil) else {
+            throw DragonConversionError.unsupportedConversion("Dragon could not read this image.")
+        }
+
+        guard let destinationType = format.utType?.identifier else {
+            throw DragonConversionError.unsupportedConversion("Dragon does not support exporting \(format.title) on this Mac.")
+        }
+
+        let supportedDestinationTypes = (CGImageDestinationCopyTypeIdentifiers() as? [String]) ?? []
+        guard supportedDestinationTypes.contains(destinationType) else {
+            throw DragonConversionError.unsupportedConversion("Dragon does not support exporting \(format.title) on this Mac.")
+        }
+
+        guard let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
+            throw DragonConversionError.unsupportedConversion("Dragon could not decode this image.")
+        }
+
+        guard let destination = CGImageDestinationCreateWithURL(outputURL as CFURL, destinationType as CFString, 1, nil) else {
+            throw DragonConversionError.unsupportedConversion("Dragon could not prepare the \(format.title) exporter.")
+        }
+
+        let properties: CFDictionary
+        switch format {
+        case .heic:
             properties = [kCGImageDestinationLossyCompressionQuality: 0.92] as CFDictionary
         default:
             properties = [:] as CFDictionary
@@ -1480,6 +2376,23 @@ private enum DragonConversionService {
 
         guard CGImageDestinationFinalize(destination) else {
             throw DragonConversionError.unsupportedConversion("Dragon could not write the converted image.")
+        }
+    }
+
+    private static func bitmapFileType(for format: DragonConversionFormat) -> NSBitmapImageRep.FileType? {
+        switch format {
+        case .png:
+            return .png
+        case .jpeg:
+            return .jpeg
+        case .tiff:
+            return .tiff
+        case .bmp:
+            return .bmp
+        case .gif:
+            return .gif
+        default:
+            return nil
         }
     }
 
@@ -2099,11 +3012,43 @@ private enum DragonImageDestinationSupport {
 
 private struct CollapsedDragonToggle: View {
     let isDropTargeted: Bool
+    let isHoveringActivationZone: Bool
+
+    private var isActive: Bool {
+        isDropTargeted || isHoveringActivationZone
+    }
 
     var body: some View {
-        Rectangle()
-            .fill(Color.clear)
-            .frame(width: DragonNotchLayout.collapsedInnerWidth, height: DragonNotchLayout.collapsedHeight)
+        DragonCollapsedNotchShape(cornerRadius: DragonNotchLayout.collapsedCornerRadius)
+            .fill(Color.black.opacity(isActive ? 1 : 0.001))
+            .frame(
+                width: DragonNotchLayout.collapsedInnerWidth + (isActive ? DragonNotchLayout.collapsedHoverWidthIncrease : 0),
+                height: DragonNotchLayout.collapsedHeight + (isActive ? DragonNotchLayout.collapsedHoverHeightIncrease : 0)
+            )
+    }
+}
+
+private struct DragonCollapsedNotchShape: Shape {
+    let cornerRadius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let radius = min(cornerRadius, rect.height / 2, rect.width / 2)
+
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - radius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX - radius, y: rect.maxY),
+            control: CGPoint(x: rect.maxX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.maxY - radius),
+            control: CGPoint(x: rect.minX, y: rect.maxY)
+        )
+        path.closeSubpath()
+        return path
     }
 }
 
@@ -2117,18 +3062,24 @@ enum DragonNotchLayout {
     static let expandedWidth: CGFloat = 392
     static let collapsedInnerWidth: CGFloat = 184
     static let expandedInnerWidth: CGFloat = 392
-    static let collapsedHeight: CGFloat = 34
-    static let expandedHeight: CGFloat = 430
-    static let expandedSettingsHeight: CGFloat = 250
+    static let collapsedHeight: CGFloat = 30
+    static let expandedHeight: CGFloat = 405
+    static let expandedSettingsHeight: CGFloat = 380
+    static let maximumHostHeight: CGFloat = expandedTopPadding + expandedHeight + expandedSettingsHeight + 12
     static let collapsedTopPadding: CGFloat = 0
-    static let expandedTopPadding: CGFloat = 20
-    static let collapsedCornerRadius: CGFloat = 12
-    static let actionTileMinimumWidth: CGFloat = 70
-    static let actionTileMaximumWidth: CGFloat = 72
-    static let actionTileHeight: CGFloat = 90
-    static let actionTileSpacing: CGFloat = 18
+    static let expandedTopPadding: CGFloat = -1
+    static let collapsedCornerRadius: CGFloat = 24
+    static let actionTileWidth: CGFloat = 60
+    static let actionTileHeight: CGFloat = 62
+    static let actionTileSpacing: CGFloat = 8
+    static let stagedItemsViewportHeight: CGFloat = 80
+    static let stagedItemTileWidth: CGFloat = 78
     static let expandedContentWidth: CGFloat = 360
     static let collapsedHorizontalCenterOffset: CGFloat = 0
+    static let collapsedHoverWidthIncrease: CGFloat = 18
+    static let collapsedHoverHeightIncrease: CGFloat = 6
+    static let hoverActivationInsetX: CGFloat = 40
+    static let hoverActivationInsetY: CGFloat = 18
 }
 
 enum DragonAppearanceSettings {
@@ -2137,6 +3088,10 @@ enum DragonAppearanceSettings {
     static let backgroundBlueKey = "dragon_menu_background_blue"
     static let backgroundOpacityKey = "dragon_menu_background_opacity"
     static let fontDesignKey = "dragon_menu_font_design"
+    static let enabledActionsKey = "dragon_menu_enabled_actions"
+    static let entryModeKey = "dragon_menu_entry_mode"
+    static let menuBarIconStyleKey = "dragon_menu_bar_icon_style"
+    static let skipQuitConfirmationKey = "dragon_skip_quit_confirmation"
 }
 
 struct DragonInlineSettingsView: View {
@@ -2253,8 +3208,65 @@ private extension View {
         }
     }
 }
+
+private struct DragonVisiblePanelHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct RightClickOverlay: NSViewRepresentable {
+    let onRightClick: () -> Void
+
+    func makeNSView(context: Context) -> RightClickPassthroughView {
+        let view = RightClickPassthroughView()
+        view.onRightClick = onRightClick
+        return view
+    }
+
+    func updateNSView(_ nsView: RightClickPassthroughView, context: Context) {
+        nsView.onRightClick = onRightClick
+    }
+}
+
+private final class RightClickPassthroughView: NSView {
+    var onRightClick: (() -> Void)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard bounds.contains(point) else {
+            return nil
+        }
+
+        switch NSApp.currentEvent?.type {
+        case .rightMouseDown, .rightMouseUp:
+            return self
+        default:
+            return nil
+        }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        onRightClick?()
+    }
+}
+
 extension Notification.Name {
     static let dragonShouldCollapsePanel = Notification.Name("dragonShouldCollapsePanel")
+    static let dragonSetPanelExpanded = Notification.Name("dragonSetPanelExpanded")
+    static let dragonTogglePanelExpanded = Notification.Name("dragonTogglePanelExpanded")
+    static let dragonSetHoverActivation = Notification.Name("dragonSetHoverActivation")
     static let dragonShouldOpenSettings = Notification.Name("dragonShouldOpenSettings")
     static let dragonWillPresentImportPanel = Notification.Name("dragonWillPresentImportPanel")
     static let dragonDidDismissImportPanel = Notification.Name("dragonDidDismissImportPanel")
