@@ -1,4 +1,6 @@
-# Dragon
+<p align="center">
+  <img src="Media/banner.png" alt="Dragon app banner" width="1000">
+</p>
 
 Dragon is a free, open-source macOS utility that stages files in a floating notch or menu bar panel and runs quick file actions without leaving your current workspace.
 
