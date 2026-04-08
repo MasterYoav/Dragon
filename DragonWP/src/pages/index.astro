@@ -1,0 +1,396 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+
+const workflowSteps = [
+  {
+    title: "Stage once",
+    body:
+      "Drop files once, then keep moving without babysitting Finder windows.",
+  },
+  {
+    title: "Act instantly",
+    body:
+      "Run the next file action from the same tight surface under the notch or menu bar.",
+  },
+  {
+    title: "Stay out of the way",
+    body:
+      "Keep the utility close when needed and invisible when deep in actual work.",
+  },
+];
+
+const actionHighlights = [
+  {
+    title: "Compress",
+    body: "Reduce weight fast",
+  },
+  {
+    title: "Convert",
+    body: "Switch formats inline",
+  },
+  {
+    title: "Share",
+    body: "Send without detours",
+  },
+  {
+    title: "AirDrop",
+    body: "Push across devices",
+  },
+  {
+    title: "Tag",
+    body: "Apply Finder labels",
+  },
+  {
+    title: "Cloud Sync",
+    body: "Move into watched folders",
+  },
+];
+
+const formatGroups = [
+  {
+    label: "Images",
+    formats: "PNG, JPEG, HEIC, TIFF, BMP, GIF, WebP",
+  },
+  {
+    label: "Audio",
+    formats: "WAV, AIFF, CAF, M4A, AAC, FLAC, MP3, OGG",
+  },
+  {
+    label: "Video",
+    formats: "MP4, M4V, MOV, AVI, MKV, MPEG",
+  },
+  {
+    label: "Docs",
+    formats: "PDF, TXT, RTF, HTML, DOC, DOCX, ODT, Markdown",
+  },
+];
+---
+
+<BaseLayout
+  title="Dragon | A fast file utility for macOS"
+  description="Dragon is a free, open-source macOS utility that stages files in a floating notch or menu bar panel and runs quick file actions without leaving your workspace."
+>
+  <div class="page-shell">
+    <div class="page-noise" aria-hidden="true"></div>
+
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="Dragon home">
+        <span class="brand-mark" aria-hidden="true">
+          <img src="/dragon-icon.png" alt="" />
+        </span>
+        <span>Dragon</span>
+      </a>
+
+      <div class="header-actions">
+        <a
+          class="header-github"
+          href="https://github.com/MasterYoav/Dragon"
+          aria-label="Dragon on GitHub"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0 0 22 12.017C22 6.484 17.522 2 12 2Z"
+            />
+          </svg>
+        </a>
+        <a class="header-cta" href="https://github.com/MasterYoav/Dragon/releases" aria-label="Download Dragon v1.0">
+          <span class="header-cta-default">Download</span>
+          <span class="header-cta-hover" aria-hidden="true">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M16.365 12.027c-.017-1.902 1.553-2.814 1.624-2.857-.888-1.297-2.27-1.474-2.753-1.494-1.172-.118-2.288.69-2.883.69-.609 0-1.531-.672-2.516-.653-1.295.02-2.489.753-3.154 1.92-1.355 2.347-.345 5.79.957 7.676.652.924 1.414 1.957 2.412 1.92.976-.04 1.342-.623 2.518-.623 1.165 0 1.509.623 2.526.6 1.049-.018 1.709-.936 2.338-1.869.753-1.06 1.055-2.104 1.067-2.158-.024-.008-2.016-.773-2.136-3.152ZM14.47 6.442c.524-.653.884-1.544.785-2.442-.761.034-1.714.526-2.262 1.159-.488.56-.924 1.486-.813 2.348.856.064 1.734-.431 2.29-1.065Z"
+              />
+            </svg>
+            <span>v1.0</span>
+          </span>
+        </a>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy reveal">
+          <h1>Stage files above your workspace.</h1>
+          <p class="hero-body">
+            Dragon gives you a compact file station under the notch or in the menu
+            bar, so you can collect files once and run fast actions without leaving
+            the task you are already in.
+          </p>
+
+          <dl class="hero-meta">
+            <div>
+              <dt>Built with</dt>
+              <dd>SwiftUI + AppKit</dd>
+            </div>
+            <div>
+              <dt>License</dt>
+              <dd>Apache 2.0</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div class="hero-visual reveal">
+          <div class="display-orbit orbit-one"></div>
+          <div class="display-orbit orbit-two"></div>
+          <div class="interactive-demo" data-demo data-mode="notch" data-state="staged" data-open="false" data-hover="false">
+            <div class="macbook-demo">
+              <img class="macbook-frame" src="/macbook.png" alt="MacBook showing an interactive Dragon demo" />
+
+              <button
+                class="macbook-notch-trigger"
+                type="button"
+                data-notch-trigger
+                aria-label="Toggle Dragon notch demo"
+              ></button>
+
+              <div class="macbook-screen">
+                <div class="macbook-screen-bg"></div>
+                <p class="screen-hint screen-hint-notch">Click the notch</p>
+                <p class="screen-hint screen-hint-menu">Click the menu bar icon</p>
+
+                <img class="screen-menubar screen-menubar-notch" src="/demo-menubar.png" alt="" aria-hidden="true" />
+                <img
+                  class="screen-menubar screen-menubar-menu"
+                  src="/demo-menubarmode.png"
+                  alt=""
+                  aria-hidden="true"
+                />
+
+                <button
+                  class="screen-menubar-trigger"
+                  type="button"
+                  data-menu-trigger
+                  aria-label="Toggle Dragon menu bar demo"
+                ></button>
+
+                <img class="screen-hover-image" src="/demo-hovering.png" alt="" aria-hidden="true" />
+
+                <div class="screen-panel-stack" aria-label="Interactive Dragon demo">
+                  <img class="screen-panel screen-panel-empty" src="/demo-main.png" alt="Dragon open with no staged files" />
+                  <img class="screen-panel screen-panel-staged" src="/demo-staged.png" alt="Dragon open with a staged file" />
+                </div>
+              </div>
+            </div>
+
+            <div class="demo-toolbar">
+              <div class="demo-segment">
+                <button type="button" data-mode-option="notch">Notch</button>
+                <button type="button" data-mode-option="menu">Menu Bar</button>
+              </div>
+              <div class="demo-segment">
+                <button type="button" data-state-option="empty">Empty</button>
+                <button type="button" data-state-option="staged">Staged</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section workflow-section" id="workflow">
+        <div class="feature-section-layout">
+          <div class="section-heading reveal">
+            <p class="eyebrow">Workflow</p>
+            <h2>A compact lane for file work.</h2>
+          </div>
+
+          <div class="workflow-list">
+            {workflowSteps.map((step) => (
+              <article class="workflow-item reveal">
+                <h3>{step.title}</h3>
+                <p>{step.body}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section class="section split-section" id="actions">
+        <div class="feature-section-layout">
+          <div class="section-heading reveal">
+            <p class="eyebrow">Actions</p>
+            <h2>The utility lives in six fast moves.</h2>
+          </div>
+
+          <div class="action-grid">
+            {actionHighlights.map((item) => (
+              <article class="action-row reveal">
+                <h3>{item.title}</h3>
+                <p>{item.body}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section class="section formats-section" id="formats">
+        <div class="feature-section-layout">
+          <div class="section-heading reveal">
+            <p class="eyebrow">Formats</p>
+            <h2>Broad conversion coverage, kept in one surface.</h2>
+          </div>
+
+          <div class="formats-grid">
+            {formatGroups.map((group) => (
+              <article class="format-row reveal">
+                <h3>{group.label}</h3>
+                <p>{group.formats}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section class="site-finale reveal" aria-label="Download Dragon">
+        <div class="site-finale-inner">
+          <div class="site-finale-actions">
+            <a class="site-finale-cta" href="https://github.com/MasterYoav/Dragon/releases">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  fill="currentColor"
+                  d="M16.365 12.027c-.017-1.902 1.553-2.814 1.624-2.857-.888-1.297-2.27-1.474-2.753-1.494-1.172-.118-2.288.69-2.883.69-.609 0-1.531-.672-2.516-.653-1.295.02-2.489.753-3.154 1.92-1.355 2.347-.345 5.79.957 7.676.652.924 1.414 1.957 2.412 1.92.976-.04 1.342-.623 2.518-.623 1.165 0 1.509.623 2.526.6 1.049-.018 1.709-.936 2.338-1.869.753-1.06 1.055-2.104 1.067-2.158-.024-.008-2.016-.773-2.136-3.152ZM14.47 6.442c.524-.653.884-1.544.785-2.442-.761.034-1.714.526-2.262 1.159-.488.56-.924 1.486-.813 2.348.856.064 1.734-.431 2.29-1.065Z"
+                />
+              </svg>
+              <span>Download for Mac</span>
+            </a>
+
+            <a
+              class="site-finale-github"
+              href="https://github.com/MasterYoav/Dragon"
+              aria-label="Dragon on GitHub"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  fill="currentColor"
+                  d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0 0 22 12.017C22 6.484 17.522 2 12 2Z"
+                />
+              </svg>
+            </a>
+          </div>
+
+          <p class="site-finale-wordmark" aria-hidden="true">Dragon</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script is:inline>
+    const siteHeader = document.querySelector(".site-header");
+    const demoRoot = document.querySelector("[data-demo]");
+
+    if (siteHeader) {
+      const syncHeaderState = () => {
+        siteHeader.dataset.scrolled = window.scrollY > 12 ? "true" : "false";
+      };
+
+      syncHeaderState();
+      window.addEventListener("scroll", syncHeaderState, { passive: true });
+    }
+
+    if (demoRoot) {
+      const syncDemoButtons = () => {
+        demoRoot.querySelectorAll("[data-mode-option]").forEach((button) => {
+          const active = button.dataset.modeOption === demoRoot.dataset.mode;
+          button.dataset.active = active ? "true" : "false";
+          button.setAttribute("aria-pressed", String(active));
+        });
+
+        demoRoot.querySelectorAll("[data-state-option]").forEach((button) => {
+          const active = button.dataset.stateOption === demoRoot.dataset.state;
+          button.dataset.active = active ? "true" : "false";
+          button.setAttribute("aria-pressed", String(active));
+        });
+      };
+
+      const setMode = (mode) => {
+        demoRoot.dataset.mode = mode;
+        demoRoot.dataset.hover = "false";
+        syncDemoButtons();
+      };
+
+      const setState = (state) => {
+        demoRoot.dataset.state = state;
+        syncDemoButtons();
+      };
+
+      const setOpen = (open) => {
+        demoRoot.dataset.open = open ? "true" : "false";
+        demoRoot.querySelectorAll("[data-notch-trigger], [data-menu-trigger]").forEach((button) => {
+          button.setAttribute("aria-expanded", String(open));
+        });
+      };
+
+      demoRoot.querySelectorAll("[data-mode-option]").forEach((button) => {
+        button.addEventListener("click", () => setMode(button.dataset.modeOption));
+      });
+
+      demoRoot.querySelectorAll("[data-state-option]").forEach((button) => {
+        button.addEventListener("click", () => setState(button.dataset.stateOption));
+      });
+
+      const notchTrigger = demoRoot.querySelector("[data-notch-trigger]");
+      const menuTrigger = demoRoot.querySelector("[data-menu-trigger]");
+      const isWithinVisiblePanel = (event) => {
+        const activePanel =
+          demoRoot.dataset.state === "staged"
+            ? demoRoot.querySelector(".screen-panel-staged")
+            : demoRoot.querySelector(".screen-panel-empty");
+
+        if (!activePanel || demoRoot.dataset.open !== "true") return false;
+
+        const rect = activePanel.getBoundingClientRect();
+        return (
+          event.clientX >= rect.left &&
+          event.clientX <= rect.right &&
+          event.clientY >= rect.top &&
+          event.clientY <= rect.bottom
+        );
+      };
+
+      notchTrigger?.addEventListener("mouseenter", () => {
+        if (demoRoot.dataset.mode === "notch" && demoRoot.dataset.open !== "true") {
+          demoRoot.dataset.hover = "true";
+        }
+      });
+
+      notchTrigger?.addEventListener("mouseleave", () => {
+        demoRoot.dataset.hover = "false";
+      });
+
+      notchTrigger?.addEventListener("focus", () => {
+        if (demoRoot.dataset.mode === "notch" && demoRoot.dataset.open !== "true") {
+          demoRoot.dataset.hover = "true";
+        }
+      });
+
+      notchTrigger?.addEventListener("blur", () => {
+        demoRoot.dataset.hover = "false";
+      });
+
+      notchTrigger?.addEventListener("click", () => {
+        if (demoRoot.dataset.mode === "notch") {
+          demoRoot.dataset.hover = "false";
+          setOpen(demoRoot.dataset.open !== "true");
+        }
+      });
+
+      menuTrigger?.addEventListener("click", () => {
+        if (demoRoot.dataset.mode === "menu") setOpen(demoRoot.dataset.open !== "true");
+      });
+
+      document.addEventListener("click", (event) => {
+        if (demoRoot.dataset.open !== "true") return;
+        if (event.target.closest("[data-notch-trigger], [data-menu-trigger], [data-mode-option], [data-state-option]")) {
+          return;
+        }
+        if (isWithinVisiblePanel(event)) return;
+        setOpen(false);
+        demoRoot.dataset.hover = "false";
+      });
+
+      syncDemoButtons();
+      setOpen(demoRoot.dataset.open === "true");
+    }
+  </script>
+</BaseLayout>

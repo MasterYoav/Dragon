@@ -20,6 +20,8 @@ struct ContentView: View {
     @AppStorage(DragonAppearanceSettings.backgroundGreenKey) private var backgroundGreen = 0.16
     @AppStorage(DragonAppearanceSettings.backgroundBlueKey) private var backgroundBlue = 0.22
     @AppStorage(DragonAppearanceSettings.backgroundOpacityKey) private var backgroundOpacity = 0.78
+    @AppStorage(DragonAppearanceSettings.themeKey) private var themeRawValue = DragonTheme.graphite.rawValue
+    @AppStorage(DragonAppearanceSettings.applyThemeToHoverToggleKey) private var applyThemeToHoverToggle = false
     @AppStorage(DragonAppearanceSettings.fontDesignKey) private var fontDesignRawValue = DragonFontDesign.rounded.rawValue
     @AppStorage(DragonAppearanceSettings.enabledActionsKey) private var enabledActionsRawValue = DragonActionKind.allCases.map(\.rawValue).joined(separator: ",")
     @AppStorage(DragonAppearanceSettings.entryModeKey) private var entryModeRawValue = DragonEntryMode.notch.rawValue
@@ -160,7 +162,8 @@ struct ContentView: View {
 
     private var menuColorScheme: ColorScheme {
         let luminance = (0.2126 * backgroundRed) + (0.7152 * backgroundGreen) + (0.0722 * backgroundBlue)
-        let prefersLightAppearance = backgroundOpacity > 0.98 && luminance > 0.92
+        let selectedTheme = DragonTheme(rawValue: themeRawValue) ?? .graphite
+        let prefersLightAppearance = selectedTheme.prefersLightText == false || (backgroundOpacity > 0.98 && luminance > 0.92)
         return prefersLightAppearance ? .light : .dark
     }
 
@@ -174,6 +177,18 @@ struct ContentView: View {
 
     private var selectedEntryMode: DragonEntryMode {
         DragonEntryMode(rawValue: entryModeRawValue) ?? .notch
+    }
+
+    private var selectedTheme: DragonTheme {
+        DragonTheme(rawValue: themeRawValue) ?? .graphite
+    }
+
+    private var collapsedToggleFillColor: Color {
+        guard applyThemeToHoverToggle, selectedEntryMode == .notch else {
+            return .black
+        }
+
+        return Color(.sRGB, red: selectedTheme.red, green: selectedTheme.green, blue: selectedTheme.blue, opacity: 1)
     }
 
     private var topPanelPadding: CGFloat {
@@ -410,7 +425,11 @@ struct ContentView: View {
                 isInspectorExpanded.toggle()
             }
         } label: {
-            CollapsedDragonToggle(isDropTargeted: isDropTargeted, isHoveringActivationZone: isHoveringActivationZone)
+            CollapsedDragonToggle(
+                isDropTargeted: isDropTargeted,
+                isHoveringActivationZone: isHoveringActivationZone,
+                fillColor: collapsedToggleFillColor
+            )
                 .contentShape(DragonCollapsedNotchShape(cornerRadius: DragonNotchLayout.collapsedCornerRadius))
         }
         .buttonStyle(.plain)
@@ -475,6 +494,7 @@ struct ContentView: View {
                         Circle()
                             .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
                     )
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .help(isSettingsExpanded ? "Hide settings" : "Open settings")
@@ -558,6 +578,7 @@ struct ContentView: View {
                 .font(selectedFontDesign.font(size: 11, weight: .semibold))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .background(
@@ -621,6 +642,7 @@ struct ContentView: View {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(Color.white.opacity(0.06))
             )
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -644,9 +666,6 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if selectedEntryMode == .menuBar {
-                menuBarIconStylePicker
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 8)
@@ -672,6 +691,7 @@ struct ContentView: View {
                 .font(selectedFontDesign.font(size: 11, weight: .semibold))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 9)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .background(
@@ -771,6 +791,7 @@ struct ContentView: View {
                 minHeight: DragonNotchLayout.actionTileHeight,
                 alignment: .center
             )
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .overlay(
@@ -3013,6 +3034,7 @@ private enum DragonImageDestinationSupport {
 private struct CollapsedDragonToggle: View {
     let isDropTargeted: Bool
     let isHoveringActivationZone: Bool
+    let fillColor: Color
 
     private var isActive: Bool {
         isDropTargeted || isHoveringActivationZone
@@ -3020,7 +3042,7 @@ private struct CollapsedDragonToggle: View {
 
     var body: some View {
         DragonCollapsedNotchShape(cornerRadius: DragonNotchLayout.collapsedCornerRadius)
-            .fill(Color.black.opacity(isActive ? 1 : 0.001))
+            .fill(fillColor.opacity(isActive ? 1 : 0.001))
             .frame(
                 width: DragonNotchLayout.collapsedInnerWidth + (isActive ? DragonNotchLayout.collapsedHoverWidthIncrease : 0),
                 height: DragonNotchLayout.collapsedHeight + (isActive ? DragonNotchLayout.collapsedHoverHeightIncrease : 0)
@@ -3087,6 +3109,8 @@ enum DragonAppearanceSettings {
     static let backgroundGreenKey = "dragon_menu_background_green"
     static let backgroundBlueKey = "dragon_menu_background_blue"
     static let backgroundOpacityKey = "dragon_menu_background_opacity"
+    static let themeKey = "dragon_menu_theme"
+    static let applyThemeToHoverToggleKey = "dragon_apply_theme_to_hover_toggle"
     static let fontDesignKey = "dragon_menu_font_design"
     static let enabledActionsKey = "dragon_menu_enabled_actions"
     static let entryModeKey = "dragon_menu_entry_mode"
@@ -3099,13 +3123,48 @@ struct DragonInlineSettingsView: View {
     @AppStorage(DragonAppearanceSettings.backgroundGreenKey) private var backgroundGreen = 0.16
     @AppStorage(DragonAppearanceSettings.backgroundBlueKey) private var backgroundBlue = 0.22
     @AppStorage(DragonAppearanceSettings.backgroundOpacityKey) private var backgroundOpacity = 0.78
+    @AppStorage(DragonAppearanceSettings.themeKey) private var themeRawValue = DragonTheme.graphite.rawValue
+    @AppStorage(DragonAppearanceSettings.applyThemeToHoverToggleKey) private var applyThemeToHoverToggle = false
+    @AppStorage(DragonAppearanceSettings.entryModeKey) private var entryModeRawValue = DragonEntryMode.notch.rawValue
+    @AppStorage(DragonAppearanceSettings.menuBarIconStyleKey) private var menuBarIconStyleRawValue = DragonMenuBarIconStyle.color.rawValue
     @AppStorage(DragonAppearanceSettings.fontDesignKey) private var fontDesignRawValue = DragonFontDesign.rounded.rawValue
+
+    private var selectedTheme: DragonTheme {
+        DragonTheme(rawValue: themeRawValue) ?? .graphite
+    }
+
+    private var selectedEntryMode: DragonEntryMode {
+        DragonEntryMode(rawValue: entryModeRawValue) ?? .notch
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            colorSlider(title: "Red", value: $backgroundRed, tint: .red)
-            colorSlider(title: "Green", value: $backgroundGreen, tint: .green)
-            colorSlider(title: "Blue", value: $backgroundBlue, tint: .blue)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .center, spacing: 10) {
+                    Text("Theme")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+
+                    if selectedEntryMode == .notch {
+                        Toggle(isOn: $applyThemeToHoverToggle) {
+                            Text("Apply to notch")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        .toggleStyle(.checkbox)
+                    }
+                }
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: 10) {
+                        ForEach(DragonTheme.allCases) { theme in
+                            themeCard(theme)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(height: 108, alignment: .topLeading)
+            }
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
@@ -3121,80 +3180,304 @@ struct DragonInlineSettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Font style")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 8) {
+                Picker("Font", selection: $fontDesignRawValue) {
                     ForEach(DragonFontDesign.allCases) { design in
-                        Button {
-                            fontDesignRawValue = design.rawValue
-                        } label: {
-                            Text(design.title)
-                                .font(design.font(size: 11, weight: .semibold))
+                        Text(design.title)
+                            .font(design.font(size: 12, weight: .regular))
+                            .tag(design.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+
+            if selectedEntryMode == .menuBar {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Menu bar icon")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+
+                    HStack(spacing: 8) {
+                        ForEach(DragonMenuBarIconStyle.allCases) { style in
+                            Button {
+                                menuBarIconStyleRawValue = style.rawValue
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(style.assetName)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: 18, height: 18)
+
+                                    Text(style.title)
+                                        .font(.system(size: 11, weight: .semibold))
+                                }
                                 .frame(maxWidth: .infinity)
-                                .padding(.vertical, 7)
+                                .padding(.vertical, 9)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(menuBarIconStyleRawValue == style.rawValue ? Color.accentColor.opacity(0.22) : Color.white.opacity(0.06))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .strokeBorder(menuBarIconStyleRawValue == style.rawValue ? Color.accentColor.opacity(0.6) : Color.white.opacity(0.08), lineWidth: 1)
+                            )
                         }
-                        .buttonStyle(.plain)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(fontDesignRawValue == design.rawValue ? Color.accentColor.opacity(0.22) : Color.white.opacity(0.06))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(fontDesignRawValue == design.rawValue ? Color.accentColor.opacity(0.6) : Color.white.opacity(0.08), lineWidth: 1)
-                        )
                     }
                 }
             }
         }
     }
 
-    private func colorSlider(title: String, value: Binding<Double>, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(title)
-                    .font(.system(size: 12, weight: .medium))
-                Spacer()
-                Text("\(Int(value.wrappedValue * 255))")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
+    private func themeCard(_ theme: DragonTheme) -> some View {
+        let isSelected = selectedTheme == theme
 
-            Slider(value: value, in: 0...1)
-                .tint(tint)
+        return Button {
+            apply(theme)
+        } label: {
+            VStack(spacing: 8) {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(theme.previewGradient)
+                    .frame(width: 78, height: 58)
+                    .overlay(alignment: .bottom) {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.black.opacity(0.82))
+                            .frame(width: 42, height: 14)
+                            .padding(.bottom, 8)
+                    }
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(isSelected ? Color.white.opacity(0.45) : Color.white.opacity(0.10), lineWidth: isSelected ? 2 : 1)
+                    )
+
+                Text(theme.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .frame(width: 78)
+            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+    }
+
+    private func apply(_ theme: DragonTheme) {
+        themeRawValue = theme.rawValue
+        backgroundRed = theme.red
+        backgroundGreen = theme.green
+        backgroundBlue = theme.blue
     }
 }
 
-enum DragonFontDesign: String, CaseIterable, Identifiable {
-    case rounded
-    case `default`
-    case serif
-    case monospaced
+enum DragonTheme: String, CaseIterable, Identifiable {
+    case deepBlack
+    case graphite
+    case moon
+    case sage
+    case dusk
+    case pearl
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
+        case .deepBlack: "Deep Black"
+        case .graphite: "Graphite"
+        case .moon: "Moon"
+        case .sage: "Sage"
+        case .dusk: "Dusk"
+        case .pearl: "Pearl"
+        }
+    }
+
+    var red: Double {
+        switch self {
+        case .deepBlack: 0.02
+        case .graphite: 0.13
+        case .moon: 0.10
+        case .sage: 0.13
+        case .dusk: 0.18
+        case .pearl: 0.95
+        }
+    }
+
+    var green: Double {
+        switch self {
+        case .deepBlack: 0.02
+        case .graphite: 0.16
+        case .moon: 0.14
+        case .sage: 0.18
+        case .dusk: 0.13
+        case .pearl: 0.93
+        }
+    }
+
+    var blue: Double {
+        switch self {
+        case .deepBlack: 0.03
+        case .graphite: 0.22
+        case .moon: 0.24
+        case .sage: 0.17
+        case .dusk: 0.22
+        case .pearl: 0.89
+        }
+    }
+
+    var opacity: Double {
+        switch self {
+        case .pearl: 0.98
+        case .deepBlack: 0.92
+        default: 0.84
+        }
+    }
+
+    var prefersLightText: Bool {
+        switch self {
+        case .pearl: false
+        default: true
+        }
+    }
+
+    var previewGradient: LinearGradient {
+        switch self {
+        case .deepBlack:
+            LinearGradient(colors: [Color(red: 0.10, green: 0.10, blue: 0.12), Color(red: 0.01, green: 0.01, blue: 0.02)], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .graphite:
+            LinearGradient(colors: [Color(red: 0.21, green: 0.24, blue: 0.31), Color(red: 0.10, green: 0.12, blue: 0.16)], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .moon:
+            LinearGradient(colors: [Color(red: 0.27, green: 0.33, blue: 0.48), Color(red: 0.11, green: 0.15, blue: 0.24)], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .sage:
+            LinearGradient(colors: [Color(red: 0.33, green: 0.41, blue: 0.35), Color(red: 0.14, green: 0.18, blue: 0.16)], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .dusk:
+            LinearGradient(colors: [Color(red: 0.43, green: 0.26, blue: 0.38), Color(red: 0.16, green: 0.10, blue: 0.16)], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .pearl:
+            LinearGradient(colors: [Color(red: 0.99, green: 0.96, blue: 0.91), Color(red: 0.90, green: 0.88, blue: 0.84)], startPoint: .topLeading, endPoint: .bottomTrailing)
+        }
+    }
+}
+
+enum DragonFontDesign: String, CaseIterable, Identifiable {
+    case sfPro = "sf_pro"
+    case rounded
+    case `default`
+    case serif
+    case monospaced
+    case avenirNext = "avenir_next"
+    case avenirNextCondensed = "avenir_next_condensed"
+    case helveticaNeue = "helvetica_neue"
+    case futura
+    case optima
+    case didot
+    case baskerville
+    case georgia
+    case palatino
+    case hoeflerText = "hoefler_text"
+    case gillSans = "gill_sans"
+    case copperplate
+    case americanTypewriter = "american_typewriter"
+    case menlo
+    case courierPrime = "courier_prime"
+    case chalkboard
+    case markerFelt = "marker_felt"
+    case noteworthy
+    case snellRoundhand = "snell_roundhand"
+    case papyrus
+    case hiraginoSans = "hiragino_sans"
+    case baskervilleOldFace = "baskerville_old_face"
+    case timesNewRoman = "times_new_roman"
+    case geneva
+    case athelas
+    case cochin
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .sfPro: "SF Pro"
         case .rounded: "Rounded"
         case .default: "Default"
         case .serif: "Serif"
         case .monospaced: "Monospaced"
+        case .avenirNext: "Avenir Next"
+        case .avenirNextCondensed: "Avenir Next Condensed"
+        case .helveticaNeue: "Helvetica Neue"
+        case .futura: "Futura"
+        case .optima: "Optima"
+        case .didot: "Didot"
+        case .baskerville: "Baskerville"
+        case .georgia: "Georgia"
+        case .palatino: "Palatino"
+        case .hoeflerText: "Hoefler Text"
+        case .gillSans: "Gill Sans"
+        case .copperplate: "Copperplate"
+        case .americanTypewriter: "American Typewriter"
+        case .menlo: "Menlo"
+        case .courierPrime: "Courier Prime"
+        case .chalkboard: "Chalkboard"
+        case .markerFelt: "Marker Felt"
+        case .noteworthy: "Noteworthy"
+        case .snellRoundhand: "Snell Roundhand"
+        case .papyrus: "Papyrus"
+        case .hiraginoSans: "Hiragino Sans"
+        case .baskervilleOldFace: "Baskerville Old Face"
+        case .timesNewRoman: "Times New Roman"
+        case .geneva: "Geneva"
+        case .athelas: "Athelas"
+        case .cochin: "Cochin"
         }
     }
 
-    var swiftUIFontDesign: Font.Design {
+    private var swiftUIFontDesign: Font.Design {
         switch self {
         case .rounded: .rounded
         case .default: .default
         case .serif: .serif
         case .monospaced: .monospaced
+        default: .default
         }
     }
 
     func font(size: CGFloat, weight: Font.Weight) -> Font {
-        .system(size: size, weight: weight, design: swiftUIFontDesign)
+        if let customFontName {
+            return .custom(customFontName, size: size).weight(weight)
+        }
+
+        return .system(size: size, weight: weight, design: swiftUIFontDesign)
+    }
+
+    private var customFontName: String? {
+        switch self {
+        case .sfPro: ".SF NS Text"
+        case .rounded, .default, .serif, .monospaced: nil
+        case .avenirNext: "Avenir Next"
+        case .avenirNextCondensed: "Avenir Next Condensed"
+        case .helveticaNeue: "Helvetica Neue"
+        case .futura: "Futura"
+        case .optima: "Optima"
+        case .didot: "Didot"
+        case .baskerville: "Baskerville"
+        case .georgia: "Georgia"
+        case .palatino: "Palatino"
+        case .hoeflerText: "Hoefler Text"
+        case .gillSans: "Gill Sans"
+        case .copperplate: "Copperplate"
+        case .americanTypewriter: "American Typewriter"
+        case .menlo: "Menlo"
+        case .courierPrime: "Courier"
+        case .chalkboard: "Chalkboard"
+        case .markerFelt: "Marker Felt"
+        case .noteworthy: "Noteworthy"
+        case .snellRoundhand: "Snell Roundhand"
+        case .papyrus: "Papyrus"
+        case .hiraginoSans: "Hiragino Sans"
+        case .baskervilleOldFace: "Baskerville"
+        case .timesNewRoman: "Times New Roman"
+        case .geneva: "Geneva"
+        case .athelas: "Athelas"
+        case .cochin: "Cochin"
+        }
     }
 }
 
