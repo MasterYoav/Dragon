@@ -6,7 +6,7 @@ This file documents the current state of the Dragon marketing site so the next s
 
 ## Project Summary
 
-- Project path: `/Users/yoavperetz/Developer/DragonWP`
+- Project path: `/Users/yoavperetz/Developer/Dragon/DragonWP`
 - Stack: Astro 5
 - Main goal: a classy, restrained marketing site for Dragon, visually inspired by Alcove, but themed black/red/orange and adapted to Dragon’s actual UI.
 - Primary focus of recent work: the interactive hero demo that showcases Dragon inside a MacBook frame and supports both notch mode and menu bar mode.
@@ -43,6 +43,33 @@ Current `package.json`:
     "astro": "^5.13.0"
   }
 }
+```
+
+## Repository Placement
+
+The website now lives inside the main Dragon repository rather than as a standalone repository.
+
+- repo root: `/Users/yoavperetz/Developer/Dragon`
+- website root: `/Users/yoavperetz/Developer/Dragon/DragonWP`
+
+This matters for deployment and for future sessions that open the repo from the app root first.
+
+## Vercel Deployment
+
+The website is deployed as a separate Vercel project from the main Dragon repository.
+
+Required settings:
+
+- Root Directory: `DragonWP`
+- Framework Preset: `Astro`
+- Build Command: `npm run build`
+- Output Directory: `dist`
+
+CLI alternative:
+
+```bash
+vercel --cwd DragonWP
+vercel --cwd DragonWP --prod
 ```
 
 ## Current Site Structure

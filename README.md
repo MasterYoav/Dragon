@@ -24,6 +24,16 @@ Current actions:
 
 You can also download the dmg from [Releases](https://github.com/MasterYoav/Dragon/releases)
 
+## Website
+
+Dragon also includes a marketing website inside this repository.
+
+- Website source: [DragonWP/README.md](/Users/yoavperetz/Developer/Dragon/DragonWP/README.md)
+- Website handoff notes: [DragonWP/docs/session-handoff.md](/Users/yoavperetz/Developer/Dragon/DragonWP/docs/session-handoff.md)
+- Website deployment guide: [Documentation/website-deployment.md](/Users/yoavperetz/Developer/Dragon/Documentation/website-deployment.md)
+
+The site is deployed from the `DragonWP/` subdirectory as its own Vercel project.
+
 ## Highlights
 
 - two entry modes:
@@ -113,6 +123,10 @@ Shipped coverage includes:
   - release history
 - [Documentation/release-guide.md](/Users/yoavperetz/Developer/Dragon/Documentation/release-guide.md)
   - GitHub and DMG release flow
+- [Documentation/website-deployment.md](/Users/yoavperetz/Developer/Dragon/Documentation/website-deployment.md)
+  - Vercel deployment flow for the website
+- [DragonWP/README.md](/Users/yoavperetz/Developer/Dragon/DragonWP/README.md)
+  - website development and deploy notes
 
 ## Build
 
